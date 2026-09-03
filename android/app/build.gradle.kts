@@ -5,6 +5,11 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+val releaseApiBaseUrl = providers.gradleProperty("CEH_API_BASE_URL")
+    .orElse("https://not-configured.invalid/")
+    .get()
+    .let { if (it.endsWith('/')) it else "$it/" }
+
 android {
     namespace = "ru.ceh.sklad"
     compileSdk = 35
@@ -15,8 +20,16 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.3.0"
+    }
 
-        buildConfigField("String", "API_BASE_URL", "\"http://10.0.2.2:8000/\"")
+    buildTypes {
+        getByName("debug") {
+            buildConfigField("String", "API_BASE_URL", "\"http://10.0.2.2:8000/\"")
+        }
+        getByName("release") {
+            buildConfigField("String", "API_BASE_URL", "\"$releaseApiBaseUrl\"")
+            isMinifyEnabled = false
+        }
     }
 
     buildFeatures {

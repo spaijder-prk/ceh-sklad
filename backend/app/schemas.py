@@ -13,8 +13,8 @@ class PriceType(str, Enum):
 
 
 class LoginIn(BaseModel):
-    login: str
-    password: str
+    login: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=1, max_length=128)
 
 
 class TokenOut(BaseModel):
@@ -33,7 +33,7 @@ class UserOut(BaseModel):
 class UserCreateIn(BaseModel):
     name: str = Field(min_length=2, max_length=150)
     login: str = Field(min_length=3, max_length=100)
-    password: str = Field(min_length=8, max_length=128)
+    password: str = Field(min_length=10, max_length=128)
     role: UserRole
     location_id: UUID | None = None
 

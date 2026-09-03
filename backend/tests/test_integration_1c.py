@@ -179,3 +179,154 @@ async def test_outbox_confirmation_is_idempotent_and_removes_exported_document(m
         )
         assert saved is not None and saved.external_1c_id == "1c-sale-confirmed-001" and saved.synced_1c_at is not None
         assert outbound_logs == 1
+
+
+async def test_1c_cannot_archive_product_with_stock(monkeypatch):
+    monkeypatch.setattr(settings, "integration_1c_api_key", "test-1c-key")
+    headers = {"X-1C-Key": "test-1c-key"}
+    transport = ASGITransport(app=app)
+    product = {
+        "operation_key": "safe-archive-product-create",
+        "external_1c_id": "1c-safe-archive-product",
+        "sku": "SAFE-ARCHIVE-1",
+        "name": "Товар с остатком",
+        "unit_name": "шт",
+        "retail_price": "100.00",
+        "wholesale_price": "90.00",
+        "is_active": True,
+    }
+    location = {
+        "operation_key": "safe-archive-location-create",
+        "external_1c_id": "1c-safe-archive-location",
+        "name": "Склад безопасной архивации",
+        "kind": "warehouse",
+    }
+    adjustment = {
+        "operation_key": "safe-archive-adjustment",
+        "external_1c_id": "1c-safe-archive-document",
+        "location_external_1c_id": location["external_1c_id"],
+        "comment": "Создание остатка для проверки архивации",
+        "items": [{"product_external_1c_id": product["external_1c_id"], "quantity_delta": "2.000"}],
+    }
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        assert (await client.post("/api/v1/integration/1c/products", json=product, headers=headers)).status_code == 200
+        assert (await client.post("/api/v1/integration/1c/locations", json=location, headers=headers)).status_code == 200
+        assert (await client.post("/api/v1/integration/1c/stock-adjustments", json=adjustment, headers=headers)).status_code == 200
+        archived = await client.post(
+            "/api/v1/integration/1c/products",
+            json={**product, "operation_key": "safe-archive-product-disable", "is_active": False},
+            headers=headers,
+        )
+
+    assert archived.status_code == 409
+    assert "ненулевым остатком" in archived.json()["detail"]
+
+    async with SessionFactory() as session:
+        saved = await session.scalar(select(Product).where(Product.external_1c_id == product["external_1c_id"]))
+        failed = await session.scalar(
+            select(IntegrationExchangeLog).where(IntegrationExchangeLog.operation_key == "safe-archive-product-disable")
+        )
+        assert saved is not None and saved.is_active is True
+        assert failed is not None and failed.status == "failed"
+
+
+async def test_1c_adjustment_rejects_archived_product_and_location(monkeypatch, session):
+    monkeypatch.setattr(settings, "integration_1c_api_key", "test-1c-key")
+    headers = {"X-1C-Key": "test-1c-key"}
+    archived_product = Product(
+        sku="ARCHIVED-1C-PRODUCT",
+        name="Архивный товар 1С",
+        unit_name="шт",
+        retail_price=Decimal("10.00"),
+        wholesale_price=Decimal("9.00"),
+        external_1c_id="1c-archived-product",
+        is_active=False,
+    )
+    active_product = Product(
+        sku="ACTIVE-1C-PRODUCT",
+        name="Активный товар 1С",
+        unit_name="шт",
+        retail_price=Decimal("10.00"),
+        wholesale_price=Decimal("9.00"),
+        external_1c_id="1c-active-product",
+        is_active=True,
+    )
+    active_location = Location(
+        name="Активный склад 1С",
+        kind=LocationKind.WAREHOUSE,
+        external_1c_id="1c-active-location",
+        is_active=True,
+    )
+    archived_location = Location(
+        name="Архивный склад 1С",
+        kind=LocationKind.WAREHOUSE,
+        external_1c_id="1c-archived-location",
+        is_active=False,
+    )
+    session.add_all([archived_product, active_product, active_location, archived_location])
+    await session.commit()
+
+    transport = ASGITransport(app=app)
+    archived_product_adjustment = {
+        "operation_key": "archived-product-adjustment",
+        "external_1c_id": "1c-archived-product-document",
+        "location_external_1c_id": "1c-active-location",
+        "comment": "Попытка изменить архивный товар",
+        "items": [{"product_external_1c_id": "1c-archived-product", "quantity_delta": "1.000"}],
+    }
+    archived_location_adjustment = {
+        "operation_key": "archived-location-adjustment",
+        "external_1c_id": "1c-archived-location-document",
+        "location_external_1c_id": "1c-archived-location",
+        "comment": "Попытка изменить архивный склад",
+        "items": [{"product_external_1c_id": "1c-active-product", "quantity_delta": "1.000"}],
+    }
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        product_response = await client.post(
+            "/api/v1/integration/1c/stock-adjustments", json=archived_product_adjustment, headers=headers
+        )
+        location_response = await client.post(
+            "/api/v1/integration/1c/stock-adjustments", json=archived_location_adjustment, headers=headers
+        )
+
+    assert product_response.status_code == 409
+    assert "архивного товара" in product_response.json()["detail"]
+    assert location_response.status_code == 409
+    assert "архивного места хранения" in location_response.json()["detail"]
+
+    async with SessionFactory() as check_session:
+        assert await check_session.scalar(select(func.count(InventoryBalance.id))) == 0
+        failed_count = await check_session.scalar(
+            select(func.count(IntegrationExchangeLog.id)).where(IntegrationExchangeLog.status == "failed")
+        )
+        assert failed_count == 2
+
+
+async def test_1c_cannot_change_existing_location_kind(monkeypatch):
+    monkeypatch.setattr(settings, "integration_1c_api_key", "test-1c-key")
+    headers = {"X-1C-Key": "test-1c-key"}
+    transport = ASGITransport(app=app)
+    location = {
+        "operation_key": "location-kind-create",
+        "external_1c_id": "1c-location-kind",
+        "name": "Склад с постоянным типом",
+        "kind": "warehouse",
+    }
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post("/api/v1/integration/1c/locations", json=location, headers=headers)
+        changed = await client.post(
+            "/api/v1/integration/1c/locations",
+            json={**location, "operation_key": "location-kind-change", "kind": "representative"},
+            headers=headers,
+        )
+
+    assert created.status_code == 200
+    assert changed.status_code == 409
+    assert "Тип существующего места хранения" in changed.json()["detail"]
+
+    async with SessionFactory() as session:
+        saved = await session.scalar(select(Location).where(Location.external_1c_id == location["external_1c_id"]))
+        assert saved is not None and saved.kind == LocationKind.WAREHOUSE

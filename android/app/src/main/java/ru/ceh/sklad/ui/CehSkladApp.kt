@@ -35,8 +35,10 @@ import kotlinx.coroutines.launch
 import ru.ceh.sklad.data.CashHandoverRequest
 import ru.ceh.sklad.data.LocationItem
 import ru.ceh.sklad.data.MovementItem
+import ru.ceh.sklad.data.PendingConflict
 import ru.ceh.sklad.data.SaleRequest
 import ru.ceh.sklad.data.StockItem
+import ru.ceh.sklad.data.SubmissionResult
 import ru.ceh.sklad.data.TransferRequest
 import ru.ceh.sklad.data.UserInfo
 import ru.ceh.sklad.data.WarehouseRepository
@@ -57,6 +59,8 @@ fun CehSkladApp() {
         var locations by remember { mutableStateOf<List<LocationItem>>(emptyList()) }
         var debt by remember { mutableStateOf(0.0) }
         var lastSyncAt by remember { mutableStateOf<Long?>(null) }
+        var pendingCount by remember { mutableStateOf(0) }
+        var pendingConflicts by remember { mutableStateOf<List<PendingConflict>>(emptyList()) }
         var restoring by remember { mutableStateOf(true) }
         var loading by remember { mutableStateOf(false) }
         var error by remember { mutableStateOf<String?>(null) }
@@ -75,9 +79,15 @@ fun CehSkladApp() {
             val current = user ?: return
             loading = true
             error = null
-            runCatching { repository.loadSnapshot(current.location_id) }
-                .onSuccess { applySnapshot(it) }
+            runCatching {
+                val sync = repository.syncPendingOperations()
+                pendingCount = sync.pending
+                pendingConflicts = sync.conflicts
+                if (sync.sent > 0) notice = "Отправлено из очереди и подтверждено сервером: ${sync.sent}"
+                repository.loadSnapshot(current.location_id)
+            }.onSuccess { applySnapshot(it) }
                 .onFailure { failure ->
+                    pendingCount = repository.pendingCount()
                     repository.cachedSnapshot()?.let {
                         applySnapshot(it)
                         error = "Нет связи с сервером. Показаны последние подтвержденные данные."
@@ -90,6 +100,7 @@ fun CehSkladApp() {
 
         LaunchedEffect(Unit) {
             user = repository.restoreSession()
+            pendingCount = repository.pendingCount()
             restoring = false
         }
 
@@ -120,6 +131,7 @@ fun CehSkladApp() {
                         .onSuccess {
                             user = it
                             password = ""
+                            pendingCount = repository.pendingCount()
                         }
                         .onFailure { error = "Не удалось войти. Проверьте логин и пароль" }
                     loading = false
@@ -133,16 +145,19 @@ fun CehSkladApp() {
         val warehouseStocks = stocks.filter { item -> locations.firstOrNull { it.id == item.location_id }?.kind == "warehouse" }
         val warehouses = locations.filter { it.kind == "warehouse" }
 
-        fun runOperation(block: suspend () -> String) {
+        fun runOperation(block: suspend () -> SubmissionResult) {
+            if (loading) return
             scope.launch {
                 loading = true
                 error = null
                 notice = null
                 runCatching { block() }
-                    .onSuccess { notice = it; refreshKey += 1 }
-                    .onFailure {
-                        error = "Операция не проведена. Требуется связь с сервером: ${it.message ?: "ошибка сети"}"
+                    .onSuccess { result ->
+                        notice = result.message
+                        pendingCount = repository.pendingCount()
+                        if (result.confirmed) refreshKey += 1
                     }
+                    .onFailure { error = it.message ?: "Операция не выполнена" }
                 loading = false
             }
         }
@@ -160,6 +175,7 @@ fun CehSkladApp() {
                             locations = emptyList()
                             debt = 0.0
                             lastSyncAt = null
+                            pendingConflicts = emptyList()
                         }) { Text("Выйти") }
                     },
                 )
@@ -169,6 +185,22 @@ fun CehSkladApp() {
                 Text("${currentUser.name} · долг: ${"%.2f".format(debt)}", style = MaterialTheme.typography.titleMedium)
                 lastSyncAt?.let {
                     Text("Данные на ${DateFormat.getDateTimeInstance().format(Date(it))}", style = MaterialTheme.typography.bodySmall)
+                }
+                if (pendingCount > 0) {
+                    Text("Ожидают подтверждения сервера: $pendingCount", color = MaterialTheme.colorScheme.tertiary)
+                }
+                pendingConflicts.forEach { conflict ->
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("Конфликт очереди", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
+                            Text(conflict.message, style = MaterialTheme.typography.bodySmall)
+                            TextButton(onClick = {
+                                repository.discardPending(conflict.operationKey)
+                                pendingConflicts = pendingConflicts.filterNot { it.operationKey == conflict.operationKey }
+                                pendingCount = repository.pendingCount()
+                            }) { Text("Удалить неподтвержденную операцию") }
+                        }
+                    }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { screen = "warehouses" }) { Text("Склады") }
@@ -184,18 +216,21 @@ fun CehSkladApp() {
                         ownStocks = ownStocks,
                         warehouses = warehouses,
                         representativeLocationId = currentUser.location_id,
+                        operationsEnabled = !loading,
                         onSale = { product, quantity, priceType ->
                             runOperation {
-                                repository.createSale(SaleRequest(currentUser.location_id!!, listOf(MovementItem(product.product_id, quantity)), priceType)).message
+                                repository.createSale(SaleRequest(currentUser.location_id!!, listOf(MovementItem(product.product_id, quantity)), priceType)).also {
+                                    // До confirmed=true локальный остаток не изменяется.
+                                }
                             }
                         },
                         onReturn = { product, quantity, warehouseId ->
                             runOperation {
-                                repository.returnGoods(TransferRequest(currentUser.location_id!!, warehouseId, listOf(MovementItem(product.product_id, quantity)), "Возврат из Android-приложения")).message
+                                repository.returnGoods(TransferRequest(currentUser.location_id!!, warehouseId, listOf(MovementItem(product.product_id, quantity)), "Возврат из Android-приложения"))
                             }
                         },
                         onCash = { amount ->
-                            runOperation { repository.handoverCash(CashHandoverRequest(currentUser.location_id!!, amount, "Сдача через Android-приложение")).message }
+                            runOperation { repository.handoverCash(CashHandoverRequest(currentUser.location_id!!, amount, "Сдача через Android-приложение")) }
                         },
                     )
                     else -> StockList("Остатки на складах", warehouseStocks)
@@ -243,6 +278,7 @@ private fun OperationsScreen(
     ownStocks: List<StockItem>,
     warehouses: List<LocationItem>,
     representativeLocationId: String?,
+    operationsEnabled: Boolean,
     onSale: (StockItem, Double, String) -> Unit,
     onReturn: (StockItem, Double, String) -> Unit,
     onCash: (Double) -> Unit,
@@ -271,8 +307,8 @@ private fun OperationsScreen(
         if (selected != null && quantity != null && quantity > 0) {
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { onSale(selected, quantity, "retail") }) { Text("Продать розница") }
-                    Button(onClick = { onSale(selected, quantity, "wholesale") }) { Text("Продать опт") }
+                    Button(enabled = operationsEnabled, onClick = { onSale(selected, quantity, "retail") }) { Text("Продать розница") }
+                    Button(enabled = operationsEnabled, onClick = { onSale(selected, quantity, "wholesale") }) { Text("Продать опт") }
                 }
             }
             item { Text("Возврат на склад", style = MaterialTheme.typography.titleMedium) }
@@ -281,10 +317,10 @@ private fun OperationsScreen(
                     Text(if (returnWarehouseId == warehouse.id) "✓ ${warehouse.name}" else warehouse.name)
                 }
             }
-            if (returnWarehouseId != null) item { Button(onClick = { onReturn(selected, quantity, returnWarehouseId!!) }) { Text("Оформить возврат") } }
+            if (returnWarehouseId != null) item { Button(enabled = operationsEnabled, onClick = { onReturn(selected, quantity, returnWarehouseId!!) }) { Text("Оформить возврат") } }
         }
         item { Text("Сдача денежных средств", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(top = 12.dp)) }
         item { OutlinedTextField(value = cashText, onValueChange = { cashText = it }, label = { Text("Сумма") }, modifier = Modifier.fillMaxWidth()) }
-        cashText.replace(',', '.').toDoubleOrNull()?.takeIf { it > 0 }?.let { amount -> item { Button(onClick = { onCash(amount); cashText = "" }) { Text("Сдать деньги") } } }
+        cashText.replace(',', '.').toDoubleOrNull()?.takeIf { it > 0 }?.let { amount -> item { Button(enabled = operationsEnabled, onClick = { onCash(amount); cashText = "" }) { Text("Сдать деньги") } } }
     }
 }

@@ -8,6 +8,7 @@ import com.google.gson.Gson
 /**
  * Токен хранится через Android Keystore. Кэш остатков не является источником истины:
  * он нужен только для просмотра последнего подтвержденного сервером состояния без сети.
+ * Очередь операций хранится отдельно и привязана к конкретному пользователю.
  */
 class AppStorage(context: Context) {
     private val gson = Gson()
@@ -22,6 +23,7 @@ class AppStorage(context: Context) {
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
     )
     private val cache = context.getSharedPreferences("ceh_sklad_cache", Context.MODE_PRIVATE)
+    private val queue = context.getSharedPreferences("ceh_sklad_pending_operations", Context.MODE_PRIVATE)
 
     fun savedToken(): String? = secure.getString(KEY_TOKEN, null)
 
@@ -62,9 +64,47 @@ class AppStorage(context: Context) {
         }.getOrNull()
     }
 
+    /** Выход удаляет авторизацию и снимок, но не теряет неподтвержденные операции. */
     fun clearSession() {
         secure.edit().clear().apply()
         cache.edit().clear().apply()
+    }
+
+    @Synchronized
+    fun enqueuePending(operation: PendingOperation) {
+        val rows = readQueue().toMutableList()
+        if (rows.none { it.operationKey == operation.operationKey }) {
+            rows += operation
+            writeQueue(rows)
+        }
+    }
+
+    @Synchronized
+    fun pendingOperations(userId: String): List<PendingOperation> =
+        readQueue().filter { it.userId == userId }.sortedBy { it.createdAt }
+
+    @Synchronized
+    fun pendingCount(userId: String): Int = readQueue().count { it.userId == userId }
+
+    @Synchronized
+    fun removePending(operationKey: String) {
+        writeQueue(readQueue().filterNot { it.operationKey == operationKey })
+    }
+
+    @Synchronized
+    fun markPendingError(operationKey: String, message: String) {
+        writeQueue(readQueue().map {
+            if (it.operationKey == operationKey) it.copy(lastError = message) else it
+        })
+    }
+
+    private fun readQueue(): List<PendingOperation> {
+        val raw = queue.getString(KEY_PENDING, null) ?: return emptyList()
+        return runCatching { gson.fromJson(raw, Array<PendingOperation>::class.java).toList() }.getOrDefault(emptyList())
+    }
+
+    private fun writeQueue(rows: List<PendingOperation>) {
+        queue.edit().putString(KEY_PENDING, gson.toJson(rows)).commit()
     }
 
     private companion object {
@@ -74,6 +114,7 @@ class AppStorage(context: Context) {
         const val KEY_LOCATIONS = "locations"
         const val KEY_DEBT = "debt"
         const val KEY_SYNCED_AT = "synced_at"
+        const val KEY_PENDING = "pending"
     }
 }
 
@@ -82,4 +123,13 @@ data class CachedSnapshot(
     val locations: List<LocationItem>,
     val debt: Double,
     val syncedAt: Long,
+)
+
+data class PendingOperation(
+    val userId: String,
+    val operationKey: String,
+    val type: String,
+    val payloadJson: String,
+    val createdAt: Long,
+    val lastError: String? = null,
 )

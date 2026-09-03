@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react'
 
 type User = { role: 'representative' | 'admin' | 'manager' }
+type ManagedUser = { id: string; name: string; login: string; role: string; is_active: boolean }
 type Location = { id: string; name: string; kind: 'warehouse' | 'representative' }
 type Product = { id: string; name: string; sku: string }
 type ReportRow = {
@@ -67,6 +68,7 @@ export default function ManagementExtensions() {
   const [role, setRole] = useState<User['role'] | null>(null)
   const [locations, setLocations] = useState<Location[]>([])
   const [products, setProducts] = useState<Product[]>([])
+  const [managedUsers, setManagedUsers] = useState<ManagedUser[]>([])
   const [report, setReport] = useState<ReportRow[]>([])
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
@@ -85,6 +87,7 @@ export default function ManagementExtensions() {
     if (!token) {
       setRole(null)
       setReport([])
+      setManagedUsers([])
       return
     }
     let cancelled = false
@@ -96,13 +99,15 @@ export default function ManagementExtensions() {
         const rows = await request<ReportRow[]>('/reports/representatives', token)
         if (!cancelled) setReport(rows)
         if (me.role === 'admin') {
-          const [locationRows, productRows] = await Promise.all([
+          const [locationRows, productRows, userRows] = await Promise.all([
             request<Location[]>('/locations', token),
             request<Product[]>('/products', token),
+            request<ManagedUser[]>('/admin/managed-users', token),
           ])
           if (!cancelled) {
             setLocations(locationRows)
             setProducts(productRows)
+            setManagedUsers(userRows)
           }
         }
       } catch (e) {
@@ -161,6 +166,21 @@ export default function ManagementExtensions() {
     }
   }
 
+  async function setUserStatus(user: ManagedUser, isActive: boolean) {
+    setError('')
+    setNotice('')
+    try {
+      const updated = await request<ManagedUser>(`/admin/users/${user.id}/status`, token, {
+        method: 'PATCH',
+        body: JSON.stringify({ is_active: isActive }),
+      })
+      setManagedUsers((rows) => rows.map((row) => row.id === updated.id ? updated : row))
+      setNotice(isActive ? `Пользователь ${updated.name} разблокирован` : `Пользователь ${updated.name} заблокирован`)
+    } catch (e) {
+      setError(String(e).replace('Error: ', ''))
+    }
+  }
+
   const warehouses = locations.filter((item) => item.kind === 'warehouse')
   const representatives = locations.filter((item) => item.kind === 'representative')
 
@@ -189,17 +209,29 @@ export default function ManagementExtensions() {
       </section>
 
       {role === 'admin' && (
-        <section className="panel">
-          <h2>Приём возврата от представителя</h2>
-          <form className="forms-grid" onSubmit={acceptReturn}>
-            <label>Представитель<select name="source_location_id" required><option value="">Выберите</option>{representatives.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-            <label>Склад приёмки<select name="destination_location_id" required><option value="">Выберите</option>{warehouses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-            <label>Товар<select name="product_id" required><option value="">Выберите</option>{products.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.sku}</option>)}</select></label>
-            <label>Количество<input name="quantity" type="number" min="0.001" step="0.001" required /></label>
-            <label>Комментарий<input name="comment" placeholder="Комментарий к возврату" /></label>
-            <button type="submit">Принять возврат</button>
-          </form>
-        </section>
+        <>
+          <section className="panel">
+            <h2>Пользователи</h2>
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Имя</th><th>Логин</th><th>Роль</th><th>Статус</th><th>Действие</th></tr></thead>
+                <tbody>{managedUsers.map((user) => <tr key={user.id}><td>{user.name}</td><td>{user.login}</td><td>{user.role}</td><td>{user.is_active ? 'Активен' : 'Заблокирован'}</td><td><button className={user.is_active ? 'secondary' : ''} onClick={() => void setUserStatus(user, !user.is_active)}>{user.is_active ? 'Заблокировать' : 'Разблокировать'}</button></td></tr>)}</tbody>
+              </table>
+            </div>
+          </section>
+
+          <section className="panel">
+            <h2>Приём возврата от представителя</h2>
+            <form className="forms-grid" onSubmit={acceptReturn}>
+              <label>Представитель<select name="source_location_id" required><option value="">Выберите</option>{representatives.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+              <label>Склад приёмки<select name="destination_location_id" required><option value="">Выберите</option>{warehouses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+              <label>Товар<select name="product_id" required><option value="">Выберите</option>{products.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.sku}</option>)}</select></label>
+              <label>Количество<input name="quantity" type="number" min="0.001" step="0.001" required /></label>
+              <label>Комментарий<input name="comment" placeholder="Комментарий к возврату" /></label>
+              <button type="submit">Принять возврат</button>
+            </form>
+          </section>
+        </>
       )}
     </main>
   )

@@ -7,8 +7,27 @@ on:
 
 jobs:
   backend:
-    name: Проверка backend
+    name: Проверка backend и интеграционные тесты
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: ceh_sklad_test
+          POSTGRES_USER: ceh
+          POSTGRES_PASSWORD: ceh_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ceh -d ceh_sklad_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://ceh:ceh_test@localhost:5432/ceh_sklad_test
+    defaults:
+      run:
+        working-directory: backend
     steps:
       - name: Получить код
         uses: actions/checkout@v4
@@ -17,9 +36,13 @@ jobs:
         with:
           python-version: "3.12"
       - name: Установить зависимости
-        run: pip install -e './backend[dev]'
+        run: pip install -e '.[dev]'
       - name: Проверить синтаксис
-        run: python -m compileall backend/app
+        run: python -m compileall app tests alembic
+      - name: Применить миграции
+        run: alembic upgrade head
+      - name: Выполнить интеграционные тесты
+        run: pytest -q
 
   admin-web:
     name: Сборка панели управления

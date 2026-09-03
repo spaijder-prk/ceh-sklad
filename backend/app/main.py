@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api import router
+from .audit import audit_mutations
 from .bootstrap import ensure_bootstrap_admin
 from .config import settings
 from .database import engine
@@ -19,7 +20,8 @@ async def lifespan(_: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title=settings.app_name, version="0.4.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="0.5.0", lifespan=lifespan)
+app.middleware("http")(audit_mutations)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],

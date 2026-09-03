@@ -5,13 +5,14 @@ from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .auth import get_current_user, require_roles
 from .database import get_session
 from .models import (
+    AuditLog,
     IntegrationExchangeLog,
     Location,
     LocationKind,
@@ -87,6 +88,17 @@ class IntegrationLogOut(BaseModel):
     error_message: str | None
     created_at: datetime
     completed_at: datetime | None
+
+
+class AuditLogOut(BaseModel):
+    id: UUID
+    actor_type: str
+    user_id: UUID | None
+    user_name: str | None
+    method: str
+    path: str
+    status_code: int
+    created_at: datetime
 
 
 @router.get("/operations/stock", response_model=list[StockOperationOut])
@@ -232,3 +244,33 @@ async def integration_logs(
             .limit(limit)
         )
     )
+
+
+@router.get("/admin/audit", response_model=list[AuditLogOut])
+async def audit_log(
+    limit: int = 100,
+    _: User = Depends(require_roles(UserRole.ADMIN, UserRole.MANAGER)),
+    session: AsyncSession = Depends(get_session),
+) -> list[AuditLogOut]:
+    limit = max(1, min(limit, 300))
+    rows = list(
+        await session.scalars(
+            select(AuditLog).order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(limit)
+        )
+    )
+    result: list[AuditLogOut] = []
+    for row in rows:
+        user = await session.get(User, row.user_id) if row.user_id else None
+        result.append(
+            AuditLogOut(
+                id=row.id,
+                actor_type=row.actor_type,
+                user_id=row.user_id,
+                user_name=user.name if user else None,
+                method=row.method,
+                path=row.path,
+                status_code=row.status_code,
+                created_at=row.created_at,
+            )
+        )
+    return result

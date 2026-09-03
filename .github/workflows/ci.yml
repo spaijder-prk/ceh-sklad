@@ -25,6 +25,7 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgresql+asyncpg://ceh:ceh_test@localhost:5432/ceh_sklad_test
+      JWT_SECRET: ci-test-secret-not-for-production-1234567890
     defaults:
       run:
         working-directory: backend
@@ -38,7 +39,7 @@ jobs:
       - name: Установить зависимости
         run: pip install -e '.[dev]'
       - name: Проверить синтаксис
-        run: python -m compileall app tests alembic
+        run: python -m compileall app tests alembic ../scripts/load_test.py
       - name: Применить миграции
         run: alembic upgrade head
       - name: Выполнить интеграционные тесты
@@ -99,8 +100,8 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
-      - name: Выполнить unit-тесты и собрать debug/release
-        run: gradle -p android :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease -PCEH_API_BASE_URL=https://ci.invalid/ --stacktrace
+      - name: Выполнить unit-тесты и собрать debug/release/androidTest
+        run: gradle -p android :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease :app:assembleDebugAndroidTest -PCEH_API_BASE_URL=https://ci.invalid/ --stacktrace
       - name: Сохранить debug APK
         uses: actions/upload-artifact@v4
         with:

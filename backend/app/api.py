@@ -1,5 +1,6 @@
 import hashlib
 import json
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -8,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .auth import create_access_token, decode_user_id, get_current_user, hash_password, require_roles, token_matches_user, validate_new_password, verify_password
+from .auth import create_access_token, decode_user_id, get_current_user, hash_password, require_roles, token_matches_user, validate_new_password, verify_password, verify_unknown_password
 from .database import SessionFactory, get_session
 from .models import InventoryBalance, Location, LocationKind, MoneyTransaction, Product, StockDocumentKind, User, UserRole
 from .realtime import hub
@@ -33,6 +34,8 @@ from .schemas import (
 from .services import create_adjustment, create_cash_handover, create_sale, create_transfer, representative_debt
 
 router = APIRouter(prefix="/api/v1")
+_MAX_FAILED_LOGIN_ATTEMPTS = 5
+_LOGIN_LOCK_DURATION = timedelta(minutes=5)
 
 
 def _ensure_own_location(user: User, location_id: UUID) -> None:
@@ -71,10 +74,42 @@ async def _require_location_kind(session: AsyncSession, location_id: UUID, expec
 
 @router.post("/auth/login", response_model=TokenOut)
 async def login(payload: LoginIn, session: AsyncSession = Depends(get_session)) -> TokenOut:
-    user = await session.scalar(select(User).where(User.login == payload.login))
-    if user is None or not user.is_active or not verify_password(payload.password, user.password_hash):
+    user = await session.scalar(select(User).where(User.login == payload.login).with_for_update())
+    if user is None:
+        verify_unknown_password(payload.password)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный логин или пароль")
-    return TokenOut(access_token=create_access_token(user))
+    if not user.is_active:
+        verify_unknown_password(payload.password)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный логин или пароль")
+
+    now = datetime.now(UTC)
+    if user.login_locked_until is not None:
+        if user.login_locked_until > now:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Слишком много неудачных попыток входа. Повторите позже",
+            )
+        user.login_locked_until = None
+        user.failed_login_attempts = 0
+
+    if not verify_password(payload.password, user.password_hash):
+        user.failed_login_attempts += 1
+        if user.failed_login_attempts >= _MAX_FAILED_LOGIN_ATTEMPTS:
+            user.failed_login_attempts = 0
+            user.login_locked_until = now + _LOGIN_LOCK_DURATION
+            await session.commit()
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Слишком много неудачных попыток входа. Повторите через 5 минут",
+            )
+        await session.commit()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный логин или пароль")
+
+    user.failed_login_attempts = 0
+    user.login_locked_until = None
+    access_token = create_access_token(user)
+    await session.commit()
+    return TokenOut(access_token=access_token)
 
 
 @router.get("/auth/me", response_model=UserOut)

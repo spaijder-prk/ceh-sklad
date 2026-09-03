@@ -15,6 +15,7 @@ from .models import User, UserRole
 
 password_hash = PasswordHash.recommended()
 bearer = HTTPBearer(auto_error=False)
+_dummy_password_hash = password_hash.hash("ceh-sklad-dummy-account-password-2026")
 
 
 def hash_password(password: str) -> str:
@@ -23,6 +24,11 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str, encoded: str) -> bool:
     return password_hash.verify(password, encoded)
+
+
+def verify_unknown_password(password: str) -> None:
+    """Выполняет дорогую проверку и для неизвестного логина, уменьшая timing-различие."""
+    password_hash.verify(password, _dummy_password_hash)
 
 
 def validate_new_password(password: str, login: str | None = None) -> None:

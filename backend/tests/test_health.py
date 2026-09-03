@@ -14,4 +14,4 @@ async def test_liveness_and_readiness():
     assert ready.status_code == 200
     assert ready.json()["status"] == "ready"
     assert ready.json()["database"] == "ok"
-    assert ready.json()["schema_revision"] == "20260903_06"
+    assert ready.json()["schema_revision"] == "20260903_07"

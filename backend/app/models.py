@@ -48,6 +48,9 @@ class Location(Base):
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint("failed_login_attempts >= 0", name="ck_users_failed_login_attempts_nonnegative"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(150))
@@ -56,6 +59,8 @@ class User(Base):
     role: Mapped[UserRole] = mapped_column(Enum(UserRole))
     location_id: Mapped[UUID | None] = mapped_column(ForeignKey("locations.id"), nullable=True)
     is_active: Mapped[bool] = mapped_column(default=True)
+    failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    login_locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     location: Mapped[Location | None] = relationship()
 

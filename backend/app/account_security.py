@@ -63,5 +63,7 @@ async def reset_user_password(
             detail="Новый пароль должен отличаться от текущего",
         )
     user.password_hash = hash_password(payload.new_password)
+    user.failed_login_attempts = 0
+    user.login_locked_until = None
     await session.commit()
     return PasswordOperationOut(message="Пароль пользователя сброшен. Все его старые сессии недействительны")

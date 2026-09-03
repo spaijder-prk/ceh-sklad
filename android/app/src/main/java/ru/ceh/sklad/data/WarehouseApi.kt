@@ -13,6 +13,9 @@ interface WarehouseApi {
     @GET("api/v1/auth/me")
     suspend fun me(): UserInfo
 
+    @POST("api/v1/auth/change-password")
+    suspend fun changePassword(@Body request: PasswordChangeRequest): PasswordOperationResponse
+
     @GET("api/v1/locations")
     suspend fun getLocations(): List<LocationItem>
 

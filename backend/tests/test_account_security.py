@@ -42,6 +42,25 @@ async def test_change_password_invalidates_previous_token():
         assert (await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {fresh.json()['access_token']}"})).status_code == 200
 
 
+async def test_wrong_current_password_does_not_invalidate_valid_session():
+    await _create_user("owner-wrong", "StartPass123")
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        signed_in = await _login(client, "owner-wrong", "StartPass123")
+        headers = {"Authorization": f"Bearer {signed_in.json()['access_token']}"}
+        changed = await client.post(
+            "/api/v1/auth/change-password",
+            json={"current_password": "WrongPass999", "new_password": "NewSecure456"},
+            headers=headers,
+        )
+        still_valid = await client.get("/api/v1/auth/me", headers=headers)
+
+    assert changed.status_code == 422
+    assert changed.json()["detail"] == "Текущий пароль указан неверно"
+    assert still_valid.status_code == 200
+
+
 async def test_admin_reset_invalidates_target_sessions():
     await _create_user("admin-sec", "AdminSecure123")
     target_id = await _create_user("rep-sec", "RepSecure123", UserRole.REPRESENTATIVE)

@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .auth import require_roles
@@ -35,11 +35,19 @@ class SystemStatusOut(BaseModel):
     pending_1c_cash_handovers: int
     failed_1c_last_24h: int
     oldest_pending_1c_at: datetime | None
+    unf_unmapped_products: int
+    unf_unmapped_warehouses: int
+    unf_unmapped_representatives: int
+    unf_mapping_ready: bool
 
 
 async def _count(session: AsyncSession, statement) -> int:
     value = await session.scalar(statement)
     return int(value or 0)
+
+
+def _missing_external_id(column):
+    return or_(column.is_(None), column == "")
 
 
 @router.get("/system/status", response_model=SystemStatusOut)
@@ -100,6 +108,33 @@ async def system_status(
     pending_dates = [value for value in (oldest_document, oldest_cash) if value is not None]
     oldest_pending = min(pending_dates) if pending_dates else None
 
+    unf_unmapped_products = await _count(
+        session,
+        select(func.count(Product.id)).where(
+            Product.is_active.is_(True),
+            _missing_external_id(Product.external_1c_id),
+        ),
+    )
+    unf_unmapped_warehouses = await _count(
+        session,
+        select(func.count(Location.id)).where(
+            Location.is_active.is_(True),
+            Location.kind == LocationKind.WAREHOUSE,
+            _missing_external_id(Location.external_1c_id),
+        ),
+    )
+    unf_unmapped_representatives = await _count(
+        session,
+        select(func.count(Location.id)).where(
+            Location.is_active.is_(True),
+            Location.kind == LocationKind.REPRESENTATIVE,
+            _missing_external_id(Location.external_1c_id),
+        ),
+    )
+    unf_mapping_ready = bool(settings.integration_1c_api_key) and not any(
+        (unf_unmapped_products, unf_unmapped_warehouses, unf_unmapped_representatives)
+    )
+
     revision = await session.scalar(text("SELECT version_num FROM alembic_version"))
     return SystemStatusOut(
         schema_revision=str(revision or "unknown"),
@@ -113,4 +148,8 @@ async def system_status(
         pending_1c_cash_handovers=pending_1c_cash_handovers,
         failed_1c_last_24h=failed_1c_last_24h,
         oldest_pending_1c_at=oldest_pending,
+        unf_unmapped_products=unf_unmapped_products,
+        unf_unmapped_warehouses=unf_unmapped_warehouses,
+        unf_unmapped_representatives=unf_unmapped_representatives,
+        unf_mapping_ready=unf_mapping_ready,
     )

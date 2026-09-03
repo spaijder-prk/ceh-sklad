@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import models
 from .api import router
+from .bootstrap import ensure_bootstrap_admin
 from .config import settings
 from .database import Base, engine
 
@@ -13,6 +14,7 @@ from .database import Base, engine
 async def lifespan(_: FastAPI):
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+    await ensure_bootstrap_admin()
     yield
     await engine.dispose()
 

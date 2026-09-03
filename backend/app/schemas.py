@@ -10,6 +10,24 @@ class PriceType(str, Enum):
     WHOLESALE = "wholesale"
 
 
+class LoginIn(BaseModel):
+    login: str
+    password: str
+
+
+class TokenOut(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class UserOut(BaseModel):
+    id: UUID
+    name: str
+    login: str
+    role: str
+    location_id: UUID | None
+
+
 class ProductOut(BaseModel):
     id: UUID
     sku: str

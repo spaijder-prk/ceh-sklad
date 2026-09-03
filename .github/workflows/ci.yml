@@ -45,16 +45,16 @@ jobs:
         run: pytest -q
       - name: Проверить восстановление дампа в отдельную БД
         env:
-          PGPASSWORD: ceh_test
+          PG_CONTAINER: ${{ job.services.postgres.id }}
         run: |
           DUMP=/tmp/ceh_sklad_restore_check.dump
-          pg_dump -h localhost -U ceh -d ceh_sklad_test -Fc > "$DUMP"
-          dropdb -h localhost -U ceh --if-exists ceh_sklad_restore_check
-          createdb -h localhost -U ceh ceh_sklad_restore_check
-          pg_restore -h localhost -U ceh -d ceh_sklad_restore_check --no-owner "$DUMP"
-          test "$(psql -h localhost -U ceh -d ceh_sklad_restore_check -Atc 'SELECT version_num FROM alembic_version')" = "20260903_05"
-          test "$(psql -h localhost -U ceh -d ceh_sklad_restore_check -Atc \"SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='locations' AND column_name='is_active'\")" = "1"
-          dropdb -h localhost -U ceh ceh_sklad_restore_check
+          docker exec "$PG_CONTAINER" pg_dump -U ceh -d ceh_sklad_test -Fc > "$DUMP"
+          docker exec "$PG_CONTAINER" dropdb -U ceh --if-exists ceh_sklad_restore_check
+          docker exec "$PG_CONTAINER" createdb -U ceh ceh_sklad_restore_check
+          cat "$DUMP" | docker exec -i "$PG_CONTAINER" pg_restore -U ceh -d ceh_sklad_restore_check --no-owner
+          test "$(docker exec "$PG_CONTAINER" psql -U ceh -d ceh_sklad_restore_check -Atc 'SELECT version_num FROM alembic_version')" = "20260903_05"
+          test "$(docker exec "$PG_CONTAINER" psql -U ceh -d ceh_sklad_restore_check -Atc \"SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='locations' AND column_name='is_active'\")" = "1"
+          docker exec "$PG_CONTAINER" dropdb -U ceh ceh_sklad_restore_check
 
   admin-web:
     name: Сборка панели управления

@@ -60,6 +60,23 @@ jobs:
           test "$EXPORT_LINK_TABLE_COUNT" = "1"
           docker exec "$PG_CONTAINER" dropdb -U ceh ceh_sklad_restore_check
 
+  unf-bridge:
+    name: Тесты bridge облачной УНФ
+    runs-on: ubuntu-latest
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+      - name: Установить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Установить bridge и тестовые зависимости
+        run: pip install -e './unf-bridge[dev]'
+      - name: Проверить синтаксис bridge
+        run: python -m compileall unf-bridge/unf_bridge unf-bridge/tests
+      - name: Выполнить unit-тесты bridge
+        run: pytest -q unf-bridge/tests
+
   admin-web:
     name: Сборка панели управления
     runs-on: ubuntu-latest

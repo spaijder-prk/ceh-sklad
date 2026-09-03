@@ -23,7 +23,7 @@ class WarehouseRepository(context: Context) {
     private val storage = AppStorage(appContext)
     private val gson = Gson()
     private var token: String? = storage.savedToken()
-    private var activeUserId: String? = storage.cachedUser()?.id
+    private var activeUserId: String? = storage.cachedUser()?.takeIf { isMobileRepresentative(it) }?.id
 
     private val client = OkHttpClient.Builder()
         .pingInterval(25, TimeUnit.SECONDS)
@@ -45,28 +45,49 @@ class WarehouseRepository(context: Context) {
     suspend fun login(login: String, password: String): UserInfo {
         val response = api.login(LoginRequest(login, password))
         token = response.access_token
-        val user = api.me()
-        activeUserId = user.id
-        storage.saveSession(response.access_token, user)
-        return user
+        return try {
+            val user = requireMobileRepresentative(api.me())
+            activeUserId = user.id
+            storage.saveSession(response.access_token, user)
+            user
+        } catch (error: MobileSessionRejectedException) {
+            logout()
+            throw error
+        }
     }
 
     suspend fun restoreSession(): UserInfo? {
         if (token == null) return null
         return try {
-            api.me().also {
-                activeUserId = it.id
-                storage.saveUser(it)
+            val user = api.me()
+            if (!isMobileRepresentative(user)) {
+                logout()
+                null
+            } else {
+                activeUserId = user.id
+                storage.saveUser(user)
+                user
             }
         } catch (error: HttpException) {
             if (error.code() == 401) {
                 logout()
                 null
             } else {
-                storage.cachedUser()?.also { activeUserId = it.id }
+                restoreValidCachedUser()
             }
         } catch (_: Exception) {
-            storage.cachedUser()?.also { activeUserId = it.id }
+            restoreValidCachedUser()
+        }
+    }
+
+    private suspend fun restoreValidCachedUser(): UserInfo? {
+        val cached = storage.cachedUser()
+        return if (isMobileRepresentative(cached)) {
+            activeUserId = cached!!.id
+            cached
+        } else {
+            logout()
+            null
         }
     }
 

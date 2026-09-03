@@ -12,8 +12,9 @@ async def clean_database():
     async with SessionFactory() as session:
         await session.execute(
             text(
-                "TRUNCATE TABLE audit_logs, integration_exchange_logs, money_transactions, stock_movements, "
-                "stock_document_lines, stock_documents, inventory_balances, users, products, locations CASCADE"
+                "TRUNCATE TABLE audit_logs, integration_exchange_logs, integration_export_links, "
+                "money_transactions, stock_movements, stock_document_lines, stock_documents, "
+                "inventory_balances, users, products, locations CASCADE"
             )
         )
         await session.commit()

@@ -103,5 +103,54 @@ async def test_system_status_reports_operational_counters_and_checks_role(sessio
     assert body["active_warehouses"] == 1
     assert body["active_representatives"] == 1
     assert body["oldest_pending_1c_at"] is not None
+    assert body["unf_unmapped_products"] == 1
+    assert body["unf_unmapped_warehouses"] == 1
+    assert body["unf_unmapped_representatives"] == 1
+    assert body["unf_mapping_ready"] is False
     assert manager_response.status_code == 200
     assert representative_response.status_code == 403
+
+
+async def test_system_status_marks_unf_mapping_ready_when_all_active_objects_are_mapped(session, monkeypatch):
+    monkeypatch.setattr(settings, "integration_1c_api_key", "test-status-1c-key")
+    warehouse = Location(
+        name="Склад УНФ готов",
+        kind=LocationKind.WAREHOUSE,
+        external_1c_id="unf-warehouse-ready",
+    )
+    representative = Location(
+        name="Представитель УНФ готов",
+        kind=LocationKind.REPRESENTATIVE,
+        external_1c_id="unf-representative-ready",
+    )
+    product = Product(
+        sku="UNF-READY",
+        name="Товар УНФ готов",
+        unit_name="шт",
+        retail_price=Decimal("15.00"),
+        wholesale_price=Decimal("12.00"),
+        external_1c_id="unf-product-ready",
+    )
+    manager = User(
+        name="Руководитель УНФ",
+        login="unf-ready-manager",
+        password_hash=hash_password("UnfReadyManager123"),
+        role=UserRole.MANAGER,
+    )
+    session.add_all([warehouse, representative, product, manager])
+    await session.commit()
+
+    token = create_access_token(manager)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/v1/system/status",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["unf_unmapped_products"] == 0
+    assert body["unf_unmapped_warehouses"] == 0
+    assert body["unf_unmapped_representatives"] == 0
+    assert body["unf_mapping_ready"] is True

@@ -25,7 +25,6 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgresql+asyncpg://ceh:ceh_test@localhost:5432/ceh_sklad_test
-      JWT_SECRET: ci-test-secret-not-for-production-1234567890
     defaults:
       run:
         working-directory: backend

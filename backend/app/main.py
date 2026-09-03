@@ -14,6 +14,7 @@ from .config import settings
 from .database import SessionFactory, engine
 from .integration_1c import router as integration_1c_router
 from .reporting import router as reporting_router
+from .system_status import router as system_status_router
 
 
 @asynccontextmanager
@@ -24,7 +25,7 @@ async def lifespan(_: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title=settings.app_name, version="0.10.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="0.11.0", lifespan=lifespan)
 app.middleware("http")(audit_mutations)
 app.add_middleware(
     CORSMiddleware,
@@ -36,6 +37,7 @@ app.add_middleware(
 app.include_router(router)
 app.include_router(account_security_router)
 app.include_router(reporting_router)
+app.include_router(system_status_router)
 app.include_router(integration_1c_router)
 app.include_router(admin_users_router)
 app.include_router(admin_catalog_router)

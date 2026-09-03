@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from decimal import Decimal
 
+import pytest
 from fastapi import HTTPException
 from sqlalchemy import func, select
 
@@ -95,6 +96,30 @@ async def test_sale_uses_retail_price_and_cash_handover_reduces_debt(session):
     assert await session.scalar(select(func.count(MoneyTransaction.id))) == 2
 
 
+async def test_cash_handover_cannot_exceed_current_debt(session):
+    _, _, representative, product = await _product_and_locations(session)
+    session.add(InventoryBalance(location_id=representative.id, product_id=product.id, quantity=Decimal("2")))
+    await session.commit()
+    await create_sale(
+        session,
+        representative_location_id=representative.id,
+        items=[MovementItemIn(product_id=product.id, quantity=Decimal("1"))],
+        price_type=PriceType.WHOLESALE,
+        comment="Продажа",
+    )
+
+    with pytest.raises(HTTPException) as error:
+        await create_cash_handover(
+            session,
+            representative_location_id=representative.id,
+            amount=Decimal("80.01"),
+            comment="Слишком большая сдача",
+        )
+
+    assert error.value.status_code == 409
+    assert await representative_debt(session, representative.id) == Decimal("80.00")
+
+
 async def test_two_simultaneous_sales_cannot_write_off_same_last_unit(session):
     _, _, representative, product = await _product_and_locations(session)
     session.add(InventoryBalance(location_id=representative.id, product_id=product.id, quantity=Decimal("1")))
@@ -137,3 +162,43 @@ async def test_two_simultaneous_sales_cannot_write_off_same_last_unit(session):
         )
         assert balance is not None and balance.quantity == Decimal("0.000")
         assert sale_count == 1
+
+
+async def test_parallel_transfers_can_create_same_destination_balance(session):
+    warehouse_a, warehouse_b, _, product = await _product_and_locations(session)
+    destination = Location(name="Общий склад назначения", kind=LocationKind.WAREHOUSE)
+    session.add(destination)
+    await session.flush()
+    session.add_all(
+        [
+            InventoryBalance(location_id=warehouse_a.id, product_id=product.id, quantity=Decimal("1")),
+            InventoryBalance(location_id=warehouse_b.id, product_id=product.id, quantity=Decimal("1")),
+        ]
+    )
+    await session.commit()
+    source_ids = [warehouse_a.id, warehouse_b.id]
+    destination_id = destination.id
+    product_id = product.id
+
+    async def move_one(source_id):
+        async with SessionFactory() as concurrent_session:
+            return await create_transfer(
+                concurrent_session,
+                kind=StockDocumentKind.TRANSFER,
+                source_location_id=source_id,
+                destination_location_id=destination_id,
+                items=[MovementItemIn(product_id=product_id, quantity=Decimal("1"))],
+                comment="Параллельное первое поступление",
+            )
+
+    documents = await asyncio.gather(*(move_one(source_id) for source_id in source_ids))
+    assert len(documents) == 2
+
+    async with SessionFactory() as check_session:
+        balance = await check_session.scalar(
+            select(InventoryBalance).where(
+                InventoryBalance.location_id == destination_id,
+                InventoryBalance.product_id == product_id,
+            )
+        )
+        assert balance is not None and balance.quantity == Decimal("2.000")

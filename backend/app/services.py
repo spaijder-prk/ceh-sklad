@@ -4,6 +4,7 @@ from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import (
@@ -19,18 +20,74 @@ from .models import (
 from .schemas import AdjustmentItemIn, MovementItemIn, PriceType
 
 
+async def _ensure_balance_row(session: AsyncSession, location_id: UUID, product_id: UUID) -> None:
+    """Атомарно создает нулевой остаток, если строки еще нет."""
+    await session.execute(
+        pg_insert(InventoryBalance)
+        .values(location_id=location_id, product_id=product_id, quantity=Decimal("0"))
+        .on_conflict_do_nothing(index_elements=["location_id", "product_id"])
+    )
+
+
 async def _locked_balance(session: AsyncSession, location_id: UUID, product_id: UUID) -> InventoryBalance:
-    stmt = (
+    await _ensure_balance_row(session, location_id, product_id)
+    balance = await session.scalar(
         select(InventoryBalance)
         .where(InventoryBalance.location_id == location_id, InventoryBalance.product_id == product_id)
         .with_for_update()
     )
-    balance = await session.scalar(stmt)
     if balance is None:
-        balance = InventoryBalance(location_id=location_id, product_id=product_id, quantity=Decimal("0"))
-        session.add(balance)
-        await session.flush()
+        raise RuntimeError("Не удалось получить строку остатка после ее создания")
     return balance
+
+
+async def _locked_transfer_balances(
+    session: AsyncSession,
+    source_location_id: UUID,
+    destination_location_id: UUID,
+    product_id: UUID,
+) -> tuple[InventoryBalance, InventoryBalance]:
+    """Блокирует обе строки в стабильном порядке, уменьшая риск взаимных блокировок."""
+    location_ids = sorted((source_location_id, destination_location_id), key=str)
+    for location_id in location_ids:
+        await _ensure_balance_row(session, location_id, product_id)
+
+    rows = list(
+        await session.scalars(
+            select(InventoryBalance)
+            .where(
+                InventoryBalance.product_id == product_id,
+                InventoryBalance.location_id.in_(location_ids),
+            )
+            .order_by(InventoryBalance.location_id)
+            .with_for_update()
+        )
+    )
+    by_location = {row.location_id: row for row in rows}
+    if source_location_id not in by_location or destination_location_id not in by_location:
+        raise RuntimeError("Не удалось заблокировать строки остатков для перемещения")
+    return by_location[source_location_id], by_location[destination_location_id]
+
+
+def _aggregate_movement_items(items: list[MovementItemIn]) -> list[MovementItemIn]:
+    quantities: dict[UUID, Decimal] = {}
+    for item in items:
+        quantities[item.product_id] = quantities.get(item.product_id, Decimal("0")) + item.quantity
+    return [
+        MovementItemIn(product_id=product_id, quantity=quantity)
+        for product_id, quantity in sorted(quantities.items(), key=lambda pair: str(pair[0]))
+    ]
+
+
+def _aggregate_adjustment_items(items: list[AdjustmentItemIn]) -> list[AdjustmentItemIn]:
+    quantities: dict[UUID, Decimal] = {}
+    for item in items:
+        quantities[item.product_id] = quantities.get(item.product_id, Decimal("0")) + item.quantity_delta
+    return [
+        AdjustmentItemIn(product_id=product_id, quantity_delta=quantity)
+        for product_id, quantity in sorted(quantities.items(), key=lambda pair: str(pair[0]))
+        if quantity != 0
+    ]
 
 
 async def create_transfer(
@@ -48,6 +105,7 @@ async def create_transfer(
     if not items:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Не указаны товары")
 
+    items = _aggregate_movement_items(items)
     document = StockDocument(
         kind=kind,
         source_location_id=source_location_id,
@@ -59,8 +117,9 @@ async def create_transfer(
     await session.flush()
 
     for item in items:
-        source = await _locked_balance(session, source_location_id, item.product_id)
-        destination = await _locked_balance(session, destination_location_id, item.product_id)
+        source, destination = await _locked_transfer_balances(
+            session, source_location_id, destination_location_id, item.product_id
+        )
         if source.quantity < item.quantity:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Недостаточный остаток товара {item.product_id}")
         source.quantity -= item.quantity
@@ -86,7 +145,8 @@ async def create_adjustment(
 ) -> StockDocument:
     if not items:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Не указаны товары")
-    if all(item.quantity_delta == 0 for item in items):
+    items = _aggregate_adjustment_items(items)
+    if not items:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Корректировка не содержит изменений")
 
     document = StockDocument(
@@ -100,8 +160,6 @@ async def create_adjustment(
     await session.flush()
 
     for item in items:
-        if item.quantity_delta == 0:
-            continue
         balance = await _locked_balance(session, location_id, item.product_id)
         new_quantity = balance.quantity + item.quantity_delta
         if new_quantity < 0:
@@ -129,6 +187,7 @@ async def create_sale(
     if not items:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Не указаны товары")
 
+    items = _aggregate_movement_items(items)
     document = StockDocument(
         kind=StockDocumentKind.SALE,
         source_location_id=representative_location_id,
@@ -174,6 +233,12 @@ async def create_cash_handover(
     comment: str | None,
     created_by_id: UUID | None = None,
 ) -> MoneyTransaction:
+    debt = await representative_debt(session, representative_location_id)
+    if amount > debt:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Сумма сдачи {amount} превышает текущую задолженность {debt}",
+        )
     transaction = MoneyTransaction(
         representative_location_id=representative_location_id,
         kind=MoneyTransactionKind.CASH_HANDOVER,

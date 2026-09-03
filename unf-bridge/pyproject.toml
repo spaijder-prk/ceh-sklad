@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ceh-sklad-unf-bridge"
+version = "0.1.0"
+description = "Bridge между ceh-sklad и облачной 1С:УНФ"
+requires-python = ">=3.12"
+dependencies = [
+  "httpx>=0.28,<0.29",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9",
+]
+
+[project.scripts]
+ceh-unf-bridge = "unf_bridge.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["unf_bridge*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

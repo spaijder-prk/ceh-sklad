@@ -12,7 +12,7 @@
         Referrer-Policy "strict-origin-when-cross-origin"
     }
 
-    @backend path /api/* /health
+    @backend path /api/* /health /health/*
     handle @backend {
         reverse_proxy backend:8000
     }

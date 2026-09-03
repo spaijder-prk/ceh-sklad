@@ -2,7 +2,7 @@
 
 ## Рекомендуемый вариант
 
-В репозитории есть отдельный `docker-compose.production.yml`. В нем PostgreSQL и FastAPI находятся только во внутренней Docker-сети, а наружу публикуются только порты `80/443` контейнера Caddy. Caddy получает TLS-сертификат и проксирует `/api/*` и `/health` в backend, включая WebSocket upgrade, а остальные запросы — в статическую web-панель.
+В репозитории есть отдельный `docker-compose.production.yml`. В нем PostgreSQL и FastAPI находятся только во внутренней Docker-сети, а наружу публикуются только порты `80/443` контейнера Caddy. Caddy получает TLS-сертификат и проксирует `/api/*`, `/health` и `/health/*` в backend, включая WebSocket upgrade, а остальные запросы — в статическую web-панель.
 
 ## Подготовка DNS и сервера
 
@@ -55,14 +55,17 @@ docker compose --env-file .env.production -f docker-compose.production.yml confi
 docker compose --env-file .env.production -f docker-compose.production.yml up -d --build
 ```
 
-Backend при старте автоматически выполняет `alembic upgrade head`, после чего запускает FastAPI. Первый администратор создается только если его еще нет.
+Backend при старте автоматически выполняет `alembic upgrade head`, после чего запускает FastAPI. Первый администратор создается только если его еще нет. Caddy начинает обслуживать трафик только после успешного backend healthcheck.
 
 Проверьте состояние:
 
 ```bash
 docker compose --env-file .env.production -f docker-compose.production.yml ps
 curl --fail https://sklad.example.ru/health
+curl --fail https://sklad.example.ru/health/ready
 ```
+
+`/health` — liveness процесса. `/health/ready` дополнительно делает запрос в PostgreSQL и возвращает `schema_revision`; его следует использовать для readiness/мониторинга.
 
 ## HTTPS и WebSocket
 
@@ -90,10 +93,11 @@ Web-панель при production Docker build получает `VITE_API_BASE_
 ## Проверка после развертывания
 
 1. `GET /health` возвращает `{"status":"ok"}` через HTTPS.
-2. Вход администратора работает только с рабочими учетными данными.
-3. Web-панель открывается с рабочего домена и не содержит `localhost` API.
-4. WebSocket `wss://.../api/v1/realtime` подключается из Android.
-5. 1С проходит проверку отдельного `X-1C-Key`.
-6. Тестовая продажа изменяет остаток и появляется в журнале/отчете.
-7. Выполнен staging load-test по `docs/LOAD_TEST.md`.
-8. Выполнен Android instrumented smoke workflow.
+2. `GET /health/ready` возвращает `status=ready`, `database=ok` и текущую Alembic revision.
+3. Вход администратора работает только с рабочими учетными данными.
+4. Web-панель открывается с рабочего домена и не содержит `localhost` API.
+5. WebSocket `wss://.../api/v1/realtime` подключается из Android.
+6. 1С проходит проверку отдельного `X-1C-Key`.
+7. Тестовая продажа изменяет остаток и появляется в журнале/отчете.
+8. Выполнен staging load-test по `docs/LOAD_TEST.md`.
+9. Выполнен Android instrumented smoke workflow.

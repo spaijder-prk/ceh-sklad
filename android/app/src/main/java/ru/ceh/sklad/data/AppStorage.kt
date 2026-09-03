@@ -74,7 +74,7 @@ class AppStorage(context: Context) {
     }
 
     suspend fun pendingOperations(userId: String): List<PendingOperation> =
-        dao.pendingOperations(userId).map(PendingOperationEntity::toModel)
+        dao.pendingOperations(userId).map { it.toModel() }
 
     suspend fun pendingCount(userId: String): Int = dao.pendingCount(userId)
 

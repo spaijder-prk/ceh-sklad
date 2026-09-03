@@ -1,0 +1,102 @@
+name: Staging-приемка
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: HTTPS origin staging, например https://staging-sklad.example.ru
+        required: true
+        type: string
+      location_id:
+        description: UUID виртуального склада тестового представителя
+        required: true
+        type: string
+      product_id:
+        description: UUID товара с достаточным тестовым остатком
+        required: true
+        type: string
+      requests:
+        description: Количество запросов load-test
+        required: true
+        default: "20"
+        type: string
+      concurrency:
+        description: Параллельность load-test
+        required: true
+        default: "5"
+        type: string
+      quantity:
+        description: Количество товара на одну тестовую продажу
+        required: true
+        default: "1"
+        type: string
+      execute_sales:
+        description: Реально создать тестовые продажи после dry-run
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    name: HTTPS, WSS, представитель, 1С и load-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+      - name: Установить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Установить зависимости
+        run: pip install -e './backend[dev]'
+      - name: Проверить входные параметры и secrets
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+          REP_LOGIN: ${{ secrets.CEH_STAGING_REP_LOGIN }}
+          REP_PASSWORD: ${{ secrets.CEH_STAGING_REP_PASSWORD }}
+        run: |
+          case "$BASE_URL" in https://*) ;; *) echo "base_url должен использовать HTTPS"; exit 2 ;; esac
+          test -n "$REP_LOGIN" || { echo "Не задан CEH_STAGING_REP_LOGIN"; exit 2; }
+          test -n "$REP_PASSWORD" || { echo "Не задан CEH_STAGING_REP_PASSWORD"; exit 2; }
+      - name: Выполнить read-only staging smoke
+        env:
+          CEH_STAGING_REP_LOGIN: ${{ secrets.CEH_STAGING_REP_LOGIN }}
+          CEH_STAGING_REP_PASSWORD: ${{ secrets.CEH_STAGING_REP_PASSWORD }}
+          CEH_STAGING_1C_KEY: ${{ secrets.CEH_STAGING_1C_KEY }}
+        run: >-
+          python scripts/staging_smoke.py
+          --base-url "${{ inputs.base_url }}"
+          --expected-location-id "${{ inputs.location_id }}"
+      - name: Выполнить dry-run нагрузочного сценария
+        env:
+          CEH_LOAD_PASSWORD: ${{ secrets.CEH_STAGING_REP_PASSWORD }}
+          CEH_STAGING_REP_LOGIN: ${{ secrets.CEH_STAGING_REP_LOGIN }}
+        run: >-
+          python scripts/load_test.py
+          --base-url "${{ inputs.base_url }}"
+          --login "$CEH_STAGING_REP_LOGIN"
+          --location-id "${{ inputs.location_id }}"
+          --product-id "${{ inputs.product_id }}"
+          --requests "${{ inputs.requests }}"
+          --concurrency "${{ inputs.concurrency }}"
+          --quantity "${{ inputs.quantity }}"
+      - name: Выполнить реальные тестовые продажи
+        if: ${{ inputs.execute_sales }}
+        env:
+          CEH_LOAD_PASSWORD: ${{ secrets.CEH_STAGING_REP_PASSWORD }}
+          CEH_STAGING_REP_LOGIN: ${{ secrets.CEH_STAGING_REP_LOGIN }}
+          CEH_LOAD_TEST_CONFIRM: I_UNDERSTAND_THIS_CREATES_REAL_SALES
+        run: >-
+          python scripts/load_test.py
+          --base-url "${{ inputs.base_url }}"
+          --login "$CEH_STAGING_REP_LOGIN"
+          --location-id "${{ inputs.location_id }}"
+          --product-id "${{ inputs.product_id }}"
+          --requests "${{ inputs.requests }}"
+          --concurrency "${{ inputs.concurrency }}"
+          --quantity "${{ inputs.quantity }}"
+          --execute

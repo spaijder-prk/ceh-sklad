@@ -38,6 +38,7 @@ class UnfProfileOut(BaseModel):
     recommended_transport: str
     generic_import_base: str
     confirm_export_path: str
+    confirm_export_batch_path: str
     representative_inventory_strategy: str
     mappings: dict[str, str]
 
@@ -74,12 +75,13 @@ class UnfOutboxItem(BaseModel):
 async def unf_profile() -> UnfProfileOut:
     """Стабильный контракт для bridge между ceh-sklad и облачной 1С:УНФ."""
     return UnfProfileOut(
-        contract_version="unf-cloud-v1",
+        contract_version="unf-cloud-v2",
         target_configuration="1С:Управление нашей фирмой",
         deployment="cloud",
         recommended_transport="external_bridge",
         generic_import_base="/api/v1/integration/1c",
         confirm_export_path="/api/v1/integration/1c/confirm-export",
+        confirm_export_batch_path="/api/v1/integration/1c/confirm-export-batch",
         representative_inventory_strategy="Отдельный склад УНФ для каждого торгового представителя",
         mappings={
             StockDocumentKind.TRANSFER.value: "Перемещение запасов",

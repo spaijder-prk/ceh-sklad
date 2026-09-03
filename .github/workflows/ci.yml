@@ -47,6 +47,8 @@ jobs:
   admin-web:
     name: Сборка панели управления
     runs-on: ubuntu-latest
+    env:
+      VITE_API_BASE_URL: https://ci.invalid/api/v1
     defaults:
       run:
         working-directory: admin-web
@@ -59,8 +61,14 @@ jobs:
           node-version: "22"
       - name: Установить зависимости
         run: npm install
-      - name: Собрать приложение
+      - name: Собрать production bundle
         run: npm run build
+      - name: Проверить отсутствие localhost в production bundle
+        run: |
+          if grep -R "localhost:8000" dist; then
+            echo "В production bundle найден localhost API"
+            exit 1
+          fi
 
   android:
     name: Тесты и сборка Android

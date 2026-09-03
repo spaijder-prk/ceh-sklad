@@ -1,0 +1,30 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ceh_sklad}
+      POSTGRES_USER: ${POSTGRES_USER:-ceh}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ceh_dev}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ceh_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ceh} -d ${POSTGRES_DB:-ceh_sklad}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://ceh:ceh_dev@db:5432/ceh_sklad}
+      APP_NAME: ${APP_NAME:-Цех Склад}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  ceh_postgres:

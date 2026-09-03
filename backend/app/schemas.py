@@ -100,6 +100,7 @@ class TransferIn(BaseModel):
     destination_location_id: UUID
     items: list[MovementItemIn]
     comment: str | None = None
+    operation_key: str | None = Field(default=None, min_length=8, max_length=120)
 
 
 class StockAdjustmentIn(BaseModel):
@@ -113,12 +114,14 @@ class SaleIn(BaseModel):
     items: list[MovementItemIn]
     price_type: PriceType = PriceType.RETAIL
     comment: str | None = None
+    operation_key: str | None = Field(default=None, min_length=8, max_length=120)
 
 
 class CashHandoverIn(BaseModel):
     representative_location_id: UUID
     amount: Decimal = Field(gt=0)
     comment: str | None = None
+    operation_key: str | None = Field(default=None, min_length=8, max_length=120)
 
 
 class OperationOut(BaseModel):

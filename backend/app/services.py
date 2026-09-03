@@ -5,6 +5,7 @@ from uuid import UUID
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import (
@@ -90,6 +91,63 @@ def _aggregate_adjustment_items(items: list[AdjustmentItemIn]) -> list[Adjustmen
     ]
 
 
+def _check_document_key(document: StockDocument, kind: StockDocumentKind, payload_hash: str) -> None:
+    if document.kind != kind or document.client_payload_hash != payload_hash:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ключ операции уже использован с другим содержимым",
+        )
+
+
+async def _existing_document(
+    session: AsyncSession,
+    operation_key: str | None,
+    payload_hash: str | None,
+    kind: StockDocumentKind,
+) -> StockDocument | None:
+    if operation_key is None:
+        return None
+    if payload_hash is None:
+        raise RuntimeError("Для идемпотентной операции требуется хэш содержимого")
+    document = await session.scalar(
+        select(StockDocument).where(StockDocument.client_operation_key == operation_key)
+    )
+    if document is not None:
+        _check_document_key(document, kind, payload_hash)
+    return document
+
+
+async def _flush_new_document(
+    session: AsyncSession,
+    document: StockDocument,
+    kind: StockDocumentKind,
+) -> StockDocument | None:
+    try:
+        await session.flush()
+        return None
+    except IntegrityError as exc:
+        if document.client_operation_key is None or document.client_payload_hash is None:
+            raise
+        operation_key = document.client_operation_key
+        payload_hash = document.client_payload_hash
+        await session.rollback()
+        existing = await session.scalar(
+            select(StockDocument).where(StockDocument.client_operation_key == operation_key)
+        )
+        if existing is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Конфликт при регистрации операции") from exc
+        _check_document_key(existing, kind, payload_hash)
+        return existing
+
+
+def _check_money_key(transaction: MoneyTransaction, payload_hash: str) -> None:
+    if transaction.kind != MoneyTransactionKind.CASH_HANDOVER or transaction.client_payload_hash != payload_hash:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ключ операции уже использован с другим содержимым",
+        )
+
+
 async def create_transfer(
     session: AsyncSession,
     *,
@@ -99,11 +157,17 @@ async def create_transfer(
     items: list[MovementItemIn],
     comment: str | None,
     created_by_id: UUID | None = None,
+    client_operation_key: str | None = None,
+    client_payload_hash: str | None = None,
 ) -> StockDocument:
     if source_location_id == destination_location_id:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Источник и получатель совпадают")
     if not items:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Не указаны товары")
+
+    existing = await _existing_document(session, client_operation_key, client_payload_hash, kind)
+    if existing is not None:
+        return existing
 
     items = _aggregate_movement_items(items)
     document = StockDocument(
@@ -112,9 +176,13 @@ async def create_transfer(
         destination_location_id=destination_location_id,
         created_by_id=created_by_id,
         comment=comment,
+        client_operation_key=client_operation_key,
+        client_payload_hash=client_payload_hash,
     )
     session.add(document)
-    await session.flush()
+    concurrent_existing = await _flush_new_document(session, document, kind)
+    if concurrent_existing is not None:
+        return concurrent_existing
 
     for item in items:
         source, destination = await _locked_transfer_balances(
@@ -183,9 +251,15 @@ async def create_sale(
     price_type: PriceType,
     comment: str | None,
     created_by_id: UUID | None = None,
+    client_operation_key: str | None = None,
+    client_payload_hash: str | None = None,
 ) -> StockDocument:
     if not items:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Не указаны товары")
+
+    existing = await _existing_document(session, client_operation_key, client_payload_hash, StockDocumentKind.SALE)
+    if existing is not None:
+        return existing
 
     items = _aggregate_movement_items(items)
     document = StockDocument(
@@ -193,9 +267,13 @@ async def create_sale(
         source_location_id=representative_location_id,
         created_by_id=created_by_id,
         comment=comment,
+        client_operation_key=client_operation_key,
+        client_payload_hash=client_payload_hash,
     )
     session.add(document)
-    await session.flush()
+    concurrent_existing = await _flush_new_document(session, document, StockDocumentKind.SALE)
+    if concurrent_existing is not None:
+        return concurrent_existing
 
     total = Decimal("0")
     for item in items:
@@ -232,7 +310,19 @@ async def create_cash_handover(
     amount: Decimal,
     comment: str | None,
     created_by_id: UUID | None = None,
+    client_operation_key: str | None = None,
+    client_payload_hash: str | None = None,
 ) -> MoneyTransaction:
+    if client_operation_key is not None:
+        if client_payload_hash is None:
+            raise RuntimeError("Для идемпотентной операции требуется хэш содержимого")
+        existing = await session.scalar(
+            select(MoneyTransaction).where(MoneyTransaction.client_operation_key == client_operation_key)
+        )
+        if existing is not None:
+            _check_money_key(existing, client_payload_hash)
+            return existing
+
     debt = await representative_debt(session, representative_location_id)
     if amount > debt:
         raise HTTPException(
@@ -245,8 +335,23 @@ async def create_cash_handover(
         amount=-amount,
         created_by_id=created_by_id,
         comment=comment,
+        client_operation_key=client_operation_key,
+        client_payload_hash=client_payload_hash,
     )
     session.add(transaction)
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        if client_operation_key is None or client_payload_hash is None:
+            raise
+        await session.rollback()
+        existing = await session.scalar(
+            select(MoneyTransaction).where(MoneyTransaction.client_operation_key == client_operation_key)
+        )
+        if existing is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Конфликт при регистрации операции") from exc
+        _check_money_key(existing, client_payload_hash)
+        return existing
     await session.commit()
     return transaction
 

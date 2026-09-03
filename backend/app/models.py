@@ -97,6 +97,8 @@ class StockDocument(Base):
     comment: Mapped[str | None] = mapped_column(String(500), nullable=True)
     external_1c_id: Mapped[str | None] = mapped_column(String(100), unique=True, nullable=True)
     synced_1c_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    client_operation_key: Mapped[str | None] = mapped_column(String(120), unique=True, nullable=True)
+    client_payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
@@ -133,6 +135,8 @@ class MoneyTransaction(Base):
     comment: Mapped[str | None] = mapped_column(String(500), nullable=True)
     external_1c_id: Mapped[str | None] = mapped_column(String(100), unique=True, nullable=True)
     synced_1c_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    client_operation_key: Mapped[str | None] = mapped_column(String(120), unique=True, nullable=True)
+    client_payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 

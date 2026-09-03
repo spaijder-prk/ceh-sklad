@@ -18,6 +18,8 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://ceh:ceh_dev@db:5432/ceh_sklad}
       APP_NAME: ${APP_NAME:-Цех Склад}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      CORS_ORIGINS: '${CORS_ORIGINS:-["http://localhost:5173"]}'
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-720}
       BOOTSTRAP_ADMIN_LOGIN: ${BOOTSTRAP_ADMIN_LOGIN:-admin}

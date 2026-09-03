@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, DateTime, Enum, ForeignKey, Integer, Numeric, String, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, JSON, DateTime, Enum, ForeignKey, Integer, Numeric, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -62,6 +62,10 @@ class User(Base):
 
 class Product(Base):
     __tablename__ = "products"
+    __table_args__ = (
+        CheckConstraint("retail_price >= 0", name="ck_products_retail_price_nonnegative"),
+        CheckConstraint("wholesale_price >= 0", name="ck_products_wholesale_price_nonnegative"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     sku: Mapped[str] = mapped_column(String(80), unique=True, index=True)
@@ -75,7 +79,10 @@ class Product(Base):
 
 class InventoryBalance(Base):
     __tablename__ = "inventory_balances"
-    __table_args__ = (UniqueConstraint("location_id", "product_id", name="uq_balance_location_product"),)
+    __table_args__ = (
+        UniqueConstraint("location_id", "product_id", name="uq_balance_location_product"),
+        CheckConstraint("quantity >= 0", name="ck_inventory_balances_quantity_nonnegative"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     location_id: Mapped[UUID] = mapped_column(ForeignKey("locations.id"), index=True)
@@ -105,6 +112,10 @@ class StockDocument(Base):
 
 class StockDocumentLine(Base):
     __tablename__ = "stock_document_lines"
+    __table_args__ = (
+        CheckConstraint("quantity > 0", name="ck_stock_document_lines_quantity_positive"),
+        CheckConstraint("unit_price IS NULL OR unit_price >= 0", name="ck_stock_document_lines_unit_price_nonnegative"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     document_id: Mapped[UUID] = mapped_column(ForeignKey("stock_documents.id"), index=True)

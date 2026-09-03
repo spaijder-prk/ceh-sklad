@@ -1,16 +1,19 @@
 package ru.ceh.sklad.data
 
+import android.content.Context
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import retrofit2.HttpException
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import ru.ceh.sklad.BuildConfig
 
-class WarehouseRepository {
-    private var token: String? = null
+class WarehouseRepository(context: Context) {
+    private val storage = AppStorage(context)
+    private var token: String? = storage.savedToken()
 
     private val client = OkHttpClient.Builder()
         .addInterceptor { chain ->
@@ -29,17 +32,47 @@ class WarehouseRepository {
         .create(WarehouseApi::class.java)
 
     suspend fun login(login: String, password: String): UserInfo {
-        token = api.login(LoginRequest(login, password)).access_token
-        return api.me()
+        val response = api.login(LoginRequest(login, password))
+        token = response.access_token
+        val user = api.me()
+        storage.saveSession(response.access_token, user)
+        return user
+    }
+
+    /**
+     * При отсутствии сети разрешаем открыть только последний локальный снимок.
+     * Если сервер явно вернул 401, локальная сессия удаляется.
+     */
+    suspend fun restoreSession(): UserInfo? {
+        if (token == null) return null
+        return try {
+            api.me().also(storage::saveUser)
+        } catch (error: HttpException) {
+            if (error.code() == 401) {
+                logout()
+                null
+            } else {
+                storage.cachedUser()
+            }
+        } catch (_: Exception) {
+            storage.cachedUser()
+        }
     }
 
     fun logout() {
         token = null
+        storage.clearSession()
     }
 
-    suspend fun loadStocks(): List<StockItem> = api.getStocks()
-    suspend fun loadLocations(): List<LocationItem> = api.getLocations()
-    suspend fun loadDebt(locationId: String): Double = api.getDebt(locationId).debt
+    suspend fun loadSnapshot(locationId: String?): CachedSnapshot {
+        val stocks = api.getStocks()
+        val locations = api.getLocations()
+        val debt = locationId?.let { api.getDebt(it).debt } ?: 0.0
+        return CachedSnapshot(stocks, locations, debt, System.currentTimeMillis()).also(storage::saveSnapshot)
+    }
+
+    fun cachedSnapshot(): CachedSnapshot? = storage.cachedSnapshot()
+
     suspend fun createSale(request: SaleRequest): OperationResult = api.createSale(request)
     suspend fun returnGoods(request: TransferRequest): OperationResult = api.returnGoods(request)
     suspend fun handoverCash(request: CashHandoverRequest): OperationResult = api.handoverCash(request)
@@ -54,7 +87,7 @@ class WarehouseRepository {
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                // Повторное подключение будет выполнено после следующего входа пользователя.
+                // Пользователь продолжит видеть последний подтвержденный снимок; ручное обновление повторит запрос.
             }
         })
     }

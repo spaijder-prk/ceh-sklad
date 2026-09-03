@@ -28,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
@@ -39,12 +40,15 @@ import ru.ceh.sklad.data.StockItem
 import ru.ceh.sklad.data.TransferRequest
 import ru.ceh.sklad.data.UserInfo
 import ru.ceh.sklad.data.WarehouseRepository
+import java.text.DateFormat
+import java.util.Date
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CehSkladApp() {
     MaterialTheme {
-        val repository = remember { WarehouseRepository() }
+        val context = LocalContext.current
+        val repository = remember { WarehouseRepository(context.applicationContext) }
         val scope = rememberCoroutineScope()
         var user by remember { mutableStateOf<UserInfo?>(null) }
         var login by remember { mutableStateOf("") }
@@ -52,22 +56,41 @@ fun CehSkladApp() {
         var stocks by remember { mutableStateOf<List<StockItem>>(emptyList()) }
         var locations by remember { mutableStateOf<List<LocationItem>>(emptyList()) }
         var debt by remember { mutableStateOf(0.0) }
+        var lastSyncAt by remember { mutableStateOf<Long?>(null) }
+        var restoring by remember { mutableStateOf(true) }
         var loading by remember { mutableStateOf(false) }
         var error by remember { mutableStateOf<String?>(null) }
         var notice by remember { mutableStateOf<String?>(null) }
         var refreshKey by remember { mutableStateOf(0) }
         var screen by remember { mutableStateOf("warehouses") }
 
+        fun applySnapshot(snapshot: ru.ceh.sklad.data.CachedSnapshot) {
+            stocks = snapshot.stocks
+            locations = snapshot.locations
+            debt = snapshot.debt
+            lastSyncAt = snapshot.syncedAt
+        }
+
         suspend fun refresh() {
             val current = user ?: return
             loading = true
             error = null
-            runCatching {
-                stocks = repository.loadStocks()
-                locations = repository.loadLocations()
-                current.location_id?.let { debt = repository.loadDebt(it) }
-            }.onFailure { error = it.message ?: "Не удалось получить данные" }
+            runCatching { repository.loadSnapshot(current.location_id) }
+                .onSuccess { applySnapshot(it) }
+                .onFailure { failure ->
+                    repository.cachedSnapshot()?.let {
+                        applySnapshot(it)
+                        error = "Нет связи с сервером. Показаны последние подтвержденные данные."
+                    } ?: run {
+                        error = failure.message ?: "Не удалось получить данные"
+                    }
+                }
             loading = false
+        }
+
+        LaunchedEffect(Unit) {
+            user = repository.restoreSession()
+            restoring = false
         }
 
         LaunchedEffect(user, refreshKey) {
@@ -80,13 +103,24 @@ fun CehSkladApp() {
             onDispose { webSocket?.close(1000, "Закрытие экрана") }
         }
 
+        if (restoring) {
+            Column(modifier = Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center) {
+                CircularProgressIndicator()
+                Text("Восстановление сессии…", modifier = Modifier.padding(top = 12.dp))
+            }
+            return@MaterialTheme
+        }
+
         if (user == null) {
             LoginScreen(login, password, loading, error, { login = it }, { password = it }) {
                 loading = true
                 error = null
                 scope.launch {
                     runCatching { repository.login(login.trim(), password) }
-                        .onSuccess { user = it }
+                        .onSuccess {
+                            user = it
+                            password = ""
+                        }
                         .onFailure { error = "Не удалось войти. Проверьте логин и пароль" }
                     loading = false
                 }
@@ -106,7 +140,9 @@ fun CehSkladApp() {
                 notice = null
                 runCatching { block() }
                     .onSuccess { notice = it; refreshKey += 1 }
-                    .onFailure { error = it.message ?: "Операция не выполнена" }
+                    .onFailure {
+                        error = "Операция не проведена. Требуется связь с сервером: ${it.message ?: "ошибка сети"}"
+                    }
                 loading = false
             }
         }
@@ -117,13 +153,23 @@ fun CehSkladApp() {
                     title = { Text("Цех Склад") },
                     actions = {
                         TextButton(onClick = { refreshKey += 1 }) { Text("Обновить") }
-                        TextButton(onClick = { repository.logout(); user = null; stocks = emptyList() }) { Text("Выйти") }
+                        TextButton(onClick = {
+                            repository.logout()
+                            user = null
+                            stocks = emptyList()
+                            locations = emptyList()
+                            debt = 0.0
+                            lastSyncAt = null
+                        }) { Text("Выйти") }
                     },
                 )
             },
         ) { padding ->
             Column(modifier = Modifier.fillMaxSize().padding(padding).padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("${currentUser.name} · долг: ${"%.2f".format(debt)}", style = MaterialTheme.typography.titleMedium)
+                lastSyncAt?.let {
+                    Text("Данные на ${DateFormat.getDateTimeInstance().format(Date(it))}", style = MaterialTheme.typography.bodySmall)
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { screen = "warehouses" }) { Text("Склады") }
                     Button(onClick = { screen = "mine" }) { Text("Мой остаток") }

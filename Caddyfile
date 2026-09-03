@@ -16,6 +16,7 @@
 
     @backend path /api/* /health /health/*
     handle @backend {
+        header Cache-Control "no-store"
         reverse_proxy backend:8000
     }
 

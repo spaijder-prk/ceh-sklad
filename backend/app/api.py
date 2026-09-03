@@ -37,6 +37,20 @@ def _ensure_own_location(user: User, location_id: UUID) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Операция доступна только для собственного остатка")
 
 
+async def _location(session: AsyncSession, location_id: UUID) -> Location:
+    location = await session.get(Location, location_id)
+    if location is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Место хранения не найдено")
+    return location
+
+
+async def _require_location_kind(session: AsyncSession, location_id: UUID, expected: LocationKind, message: str) -> Location:
+    location = await _location(session, location_id)
+    if location.kind != expected:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=message)
+    return location
+
+
 @router.post("/auth/login", response_model=TokenOut)
 async def login(payload: LoginIn, session: AsyncSession = Depends(get_session)) -> TokenOut:
     user = await session.scalar(select(User).where(User.login == payload.login))
@@ -97,6 +111,8 @@ async def stocks(location_id: UUID | None = None, user: User = Depends(get_curre
 async def create_location(payload: LocationCreateIn, _: User = Depends(require_roles(UserRole.ADMIN)), session: AsyncSession = Depends(get_session)) -> Location:
     if await session.scalar(select(Location).where(Location.name == payload.name)):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Место хранения с таким названием уже существует")
+    if payload.external_1c_id and await session.scalar(select(Location).where(Location.external_1c_id == payload.external_1c_id)):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Место хранения с таким идентификатором 1С уже существует")
     location = Location(name=payload.name, kind=payload.kind, external_1c_id=payload.external_1c_id)
     session.add(location)
     await session.commit()
@@ -108,6 +124,8 @@ async def create_location(payload: LocationCreateIn, _: User = Depends(require_r
 async def create_product(payload: ProductCreateIn, _: User = Depends(require_roles(UserRole.ADMIN)), session: AsyncSession = Depends(get_session)) -> Product:
     if await session.scalar(select(Product).where(Product.sku == payload.sku)):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Товар с таким артикулом уже существует")
+    if payload.external_1c_id and await session.scalar(select(Product).where(Product.external_1c_id == payload.external_1c_id)):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Товар с таким идентификатором 1С уже существует")
     product = Product(**payload.model_dump())
     session.add(product)
     await session.commit()
@@ -128,9 +146,9 @@ async def create_user(payload: UserCreateIn, _: User = Depends(require_roles(Use
     if payload.role == UserRole.REPRESENTATIVE:
         if payload.location_id is None:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Для торгового представителя нужен виртуальный склад")
-        location = await session.get(Location, payload.location_id)
-        if location is None or location.kind != LocationKind.REPRESENTATIVE:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Выбранное место не является складом торгового представителя")
+        await _require_location_kind(session, payload.location_id, LocationKind.REPRESENTATIVE, "Выбранное место не является складом торгового представителя")
+        if await session.scalar(select(User).where(User.role == UserRole.REPRESENTATIVE, User.location_id == payload.location_id)):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Этот виртуальный склад уже привязан к другому торговому представителю")
     user = User(name=payload.name, login=payload.login, password_hash=hash_password(payload.password), role=payload.role, location_id=payload.location_id)
     session.add(user)
     await session.commit()
@@ -140,6 +158,7 @@ async def create_user(payload: UserCreateIn, _: User = Depends(require_roles(Use
 
 @router.post("/stock/adjustments", response_model=OperationOut)
 async def adjustment(payload: StockAdjustmentIn, user: User = Depends(require_roles(UserRole.ADMIN)), session: AsyncSession = Depends(get_session)) -> OperationOut:
+    await _location(session, payload.location_id)
     document = await create_adjustment(session, location_id=payload.location_id, items=payload.items, comment=payload.comment, created_by_id=user.id)
     await hub.stock_changed({payload.location_id})
     return OperationOut(id=document.id, message="Корректировка остатков проведена")
@@ -147,6 +166,8 @@ async def adjustment(payload: StockAdjustmentIn, user: User = Depends(require_ro
 
 @router.post("/stock/transfers", response_model=OperationOut)
 async def transfer(payload: TransferIn, user: User = Depends(require_roles(UserRole.ADMIN)), session: AsyncSession = Depends(get_session)) -> OperationOut:
+    await _require_location_kind(session, payload.source_location_id, LocationKind.WAREHOUSE, "Источник перемещения должен быть складом")
+    await _require_location_kind(session, payload.destination_location_id, LocationKind.WAREHOUSE, "Получатель перемещения должен быть складом")
     document = await create_transfer(session, kind=StockDocumentKind.TRANSFER, source_location_id=payload.source_location_id, destination_location_id=payload.destination_location_id, items=payload.items, comment=payload.comment, created_by_id=user.id)
     await hub.stock_changed({payload.source_location_id, payload.destination_location_id})
     return OperationOut(id=document.id, message="Перемещение проведено")
@@ -154,6 +175,8 @@ async def transfer(payload: TransferIn, user: User = Depends(require_roles(UserR
 
 @router.post("/stock/issue-to-representative", response_model=OperationOut)
 async def issue_to_representative(payload: TransferIn, user: User = Depends(require_roles(UserRole.ADMIN)), session: AsyncSession = Depends(get_session)) -> OperationOut:
+    await _require_location_kind(session, payload.source_location_id, LocationKind.WAREHOUSE, "Выдача должна выполняться со склада")
+    await _require_location_kind(session, payload.destination_location_id, LocationKind.REPRESENTATIVE, "Получателем выдачи должен быть торговый представитель")
     document = await create_transfer(session, kind=StockDocumentKind.ISSUE_TO_REPRESENTATIVE, source_location_id=payload.source_location_id, destination_location_id=payload.destination_location_id, items=payload.items, comment=payload.comment, created_by_id=user.id)
     await hub.stock_changed({payload.source_location_id, payload.destination_location_id})
     return OperationOut(id=document.id, message="Товар выдан торговому представителю")
@@ -162,6 +185,8 @@ async def issue_to_representative(payload: TransferIn, user: User = Depends(requ
 @router.post("/stock/representative-return", response_model=OperationOut)
 async def representative_return(payload: TransferIn, user: User = Depends(require_roles(UserRole.ADMIN, UserRole.REPRESENTATIVE)), session: AsyncSession = Depends(get_session)) -> OperationOut:
     _ensure_own_location(user, payload.source_location_id)
+    await _require_location_kind(session, payload.source_location_id, LocationKind.REPRESENTATIVE, "Источник возврата должен быть торговым представителем")
+    await _require_location_kind(session, payload.destination_location_id, LocationKind.WAREHOUSE, "Возврат должен поступать на склад")
     document = await create_transfer(session, kind=StockDocumentKind.REPRESENTATIVE_RETURN, source_location_id=payload.source_location_id, destination_location_id=payload.destination_location_id, items=payload.items, comment=payload.comment, created_by_id=user.id)
     await hub.stock_changed({payload.source_location_id, payload.destination_location_id})
     return OperationOut(id=document.id, message="Возврат принят")
@@ -170,6 +195,7 @@ async def representative_return(payload: TransferIn, user: User = Depends(requir
 @router.post("/sales", response_model=OperationOut)
 async def sale(payload: SaleIn, user: User = Depends(require_roles(UserRole.ADMIN, UserRole.REPRESENTATIVE)), session: AsyncSession = Depends(get_session)) -> OperationOut:
     _ensure_own_location(user, payload.representative_location_id)
+    await _require_location_kind(session, payload.representative_location_id, LocationKind.REPRESENTATIVE, "Продажа должна списываться с остатка торгового представителя")
     document = await create_sale(session, representative_location_id=payload.representative_location_id, items=payload.items, price_type=payload.price_type, comment=payload.comment, created_by_id=user.id)
     await hub.stock_changed({payload.representative_location_id})
     return OperationOut(id=document.id, message="Продажа проведена")
@@ -178,6 +204,7 @@ async def sale(payload: SaleIn, user: User = Depends(require_roles(UserRole.ADMI
 @router.post("/cash-handovers", response_model=OperationOut)
 async def cash_handover(payload: CashHandoverIn, user: User = Depends(require_roles(UserRole.ADMIN, UserRole.REPRESENTATIVE)), session: AsyncSession = Depends(get_session)) -> OperationOut:
     _ensure_own_location(user, payload.representative_location_id)
+    await _require_location_kind(session, payload.representative_location_id, LocationKind.REPRESENTATIVE, "Сдача денег должна относиться к торговому представителю")
     transaction = await create_cash_handover(session, representative_location_id=payload.representative_location_id, amount=payload.amount, comment=payload.comment, created_by_id=user.id)
     return OperationOut(id=transaction.id, message="Сдача денежных средств проведена")
 
@@ -185,6 +212,7 @@ async def cash_handover(payload: CashHandoverIn, user: User = Depends(require_ro
 @router.get("/representatives/{representative_location_id}/debt", response_model=RepresentativeDebtOut)
 async def debt(representative_location_id: UUID, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> RepresentativeDebtOut:
     _ensure_own_location(user, representative_location_id)
+    await _require_location_kind(session, representative_location_id, LocationKind.REPRESENTATIVE, "Задолженность доступна только для торгового представителя")
     value: Decimal = await representative_debt(session, representative_location_id)
     return RepresentativeDebtOut(representative_location_id=representative_location_id, debt=value)
 

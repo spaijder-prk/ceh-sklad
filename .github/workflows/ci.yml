@@ -38,7 +38,7 @@ jobs:
       - name: Установить зависимости
         run: pip install -e '.[dev]'
       - name: Проверить синтаксис
-        run: python -m compileall app tests alembic ../scripts/load_test.py
+        run: python -m compileall app tests alembic ../scripts/load_test.py ../scripts/staging_smoke.py
       - name: Применить миграции
         run: alembic upgrade head
       - name: Выполнить интеграционные тесты

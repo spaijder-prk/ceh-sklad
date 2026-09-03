@@ -10,7 +10,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +18,7 @@ from .config import settings
 from .database import get_session
 from .models import (
     IntegrationExchangeLog,
+    InventoryBalance,
     Location,
     LocationKind,
     MoneyTransaction,
@@ -117,6 +118,15 @@ def _payload_hash(payload: BaseModel) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+async def _product_total_stock(session: AsyncSession, product_id: UUID) -> Decimal:
+    value = await session.scalar(
+        select(func.coalesce(func.sum(InventoryBalance.quantity), 0)).where(
+            InventoryBalance.product_id == product_id
+        )
+    )
+    return Decimal(value)
+
+
 async def _begin_import(
     session: AsyncSession,
     *,
@@ -202,6 +212,13 @@ async def import_product(payload: ImportProductIn, session: AsyncSession = Depen
         if product is None:
             product = Product(external_1c_id=payload.external_1c_id, sku=payload.sku, name=payload.name)
             session.add(product)
+        elif not payload.is_active:
+            total_stock = await _product_total_stock(session, product.id)
+            if total_stock != 0:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Нельзя архивировать товар с ненулевым остатком {total_stock}. Сначала обнулите остатки",
+                )
         product.sku = payload.sku
         product.name = payload.name
         product.unit_name = payload.unit_name
@@ -241,8 +258,12 @@ async def import_location(payload: ImportLocationIn, session: AsyncSession = Dep
         if location is None:
             location = Location(external_1c_id=payload.external_1c_id, name=payload.name, kind=payload.kind)
             session.add(location)
+        elif location.kind != payload.kind:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Тип существующего места хранения нельзя изменять через обмен 1С; создайте отдельное место хранения",
+            )
         location.name = payload.name
-        location.kind = payload.kind
         await session.flush()
         log.entity_internal_id = location.id
         log.status = "completed"
@@ -282,6 +303,11 @@ async def import_stock_adjustment(payload: ImportAdjustmentIn, session: AsyncSes
         location = await session.scalar(select(Location).where(Location.external_1c_id == payload.location_external_1c_id))
         if location is None:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Место хранения из 1С не найдено")
+        if not location.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Нельзя корректировать остатки архивного места хранения",
+            )
 
         items: list[AdjustmentItemIn] = []
         for row in payload.items:
@@ -290,6 +316,11 @@ async def import_stock_adjustment(payload: ImportAdjustmentIn, session: AsyncSes
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail=f"Товар 1С {row.product_external_1c_id} не найден",
+                )
+            if not product.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Нельзя корректировать остаток архивного товара {product.sku}",
                 )
             items.append(AdjustmentItemIn(product_id=product.id, quantity_delta=row.quantity_delta))
 

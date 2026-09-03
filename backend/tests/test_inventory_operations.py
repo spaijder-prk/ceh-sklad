@@ -202,3 +202,44 @@ async def test_parallel_transfers_can_create_same_destination_balance(session):
             )
         )
         assert balance is not None and balance.quantity == Decimal("2.000")
+
+
+async def test_two_simultaneous_cash_handovers_cannot_overpay_debt(session):
+    _, _, representative, product = await _product_and_locations(session)
+    session.add(InventoryBalance(location_id=representative.id, product_id=product.id, quantity=Decimal("1")))
+    await session.commit()
+    await create_sale(
+        session,
+        representative_location_id=representative.id,
+        items=[MovementItemIn(product_id=product.id, quantity=Decimal("1"))],
+        price_type=PriceType.RETAIL,
+        comment="Продажа перед конкурентной сдачей",
+    )
+    representative_id = representative.id
+
+    async def handover_once():
+        async with SessionFactory() as concurrent_session:
+            try:
+                return await create_cash_handover(
+                    concurrent_session,
+                    representative_location_id=representative_id,
+                    amount=Decimal("80.00"),
+                    comment="Параллельная сдача",
+                )
+            except Exception:
+                await concurrent_session.rollback()
+                raise
+
+    results = await asyncio.gather(handover_once(), handover_once(), return_exceptions=True)
+    errors = [result for result in results if isinstance(result, Exception)]
+    successes = [result for result in results if isinstance(result, MoneyTransaction)]
+
+    assert len(successes) == 1
+    assert len(errors) == 1
+    assert isinstance(errors[0], HTTPException)
+    assert errors[0].status_code == 409
+
+    async with SessionFactory() as check_session:
+        assert await representative_debt(check_session, representative_id) == Decimal("20.00")
+        transaction_count = await check_session.scalar(select(func.count(MoneyTransaction.id)))
+        assert transaction_count == 2

@@ -108,3 +108,25 @@ jobs:
           name: ceh-sklad-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+  production-config:
+    name: Проверка production Compose и reverse proxy
+    runs-on: ubuntu-latest
+    env:
+      CEH_DOMAIN: ci.invalid
+      ACME_EMAIL: ci@example.invalid
+      POSTGRES_PASSWORD: ci-postgres-password
+      DATABASE_URL: postgresql+asyncpg://ceh:ci-postgres-password@db:5432/ceh_sklad
+      JWT_SECRET: ci-production-secret-not-for-real-use-1234567890
+      BOOTSTRAP_ADMIN_LOGIN: admin
+      BOOTSTRAP_ADMIN_PASSWORD: ci-admin-password-not-for-real-use
+      INTEGRATION_1C_API_KEY: ci-1c-key-not-for-real-use
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+      - name: Проверить итоговую production-конфигурацию
+        run: docker compose -f docker-compose.production.yml config > /tmp/ceh-production-compose.yml
+      - name: Проверить Caddyfile
+        run: docker run --rm -e CEH_DOMAIN=ci.invalid -e ACME_EMAIL=ci@example.invalid -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
+      - name: Собрать production web-контейнер
+        run: docker build --build-arg VITE_API_BASE_URL=https://ci.invalid/api/v1 -t ceh-sklad-admin-web-ci ./admin-web

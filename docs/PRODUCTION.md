@@ -1,38 +1,99 @@
 # Production-развертывание
 
+## Рекомендуемый вариант
+
+В репозитории есть отдельный `docker-compose.production.yml`. В нем PostgreSQL и FastAPI находятся только во внутренней Docker-сети, а наружу публикуются только порты `80/443` контейнера Caddy. Caddy получает TLS-сертификат и проксирует `/api/*` и `/health` в backend, включая WebSocket upgrade, а остальные запросы — в статическую web-панель.
+
+## Подготовка DNS и сервера
+
+До первого запуска:
+
+1. направьте A/AAAA-запись рабочего домена на сервер;
+2. откройте входящие TCP `80` и `443`, а также UDP `443` при использовании HTTP/3;
+3. не публикуйте `5432` и `8000` в интернет;
+4. установите Docker Engine и Docker Compose plugin;
+5. создайте отдельный каталог для deployment и ограничьте доступ к `.env.production`.
+
 ## Обязательные настройки
 
-Перед запуском рабочего окружения задайте:
+Скопируйте шаблон и замените все значения-заглушки:
+
+```bash
+cp .env.production.example .env.production
+```
+
+Ключевые параметры:
 
 ```env
-ENVIRONMENT=production
-CORS_ORIGINS=["https://sklad.example.ru"]
-JWT_SECRET=<отдельный случайный секрет не короче 32 символов>
+CEH_DOMAIN=sklad.example.ru
+ACME_EMAIL=admin@example.ru
+POSTGRES_PASSWORD=<сложный пароль>
+DATABASE_URL=postgresql+asyncpg://ceh:<URL-encoded пароль>@db:5432/ceh_sklad
+JWT_SECRET=<случайный секрет не короче 32 символов>
 INTEGRATION_1C_API_KEY=<отдельный ключ для 1С>
 BOOTSTRAP_ADMIN_LOGIN=admin
 BOOTSTRAP_ADMIN_PASSWORD=<уникальный сложный пароль>
 ```
 
-При `ENVIRONMENT=production` backend откажется запускаться с дефолтным JWT-секретом, стандартным bootstrap-паролем, тестовым ключом 1С или HTTP-адресом в CORS.
+Если пароль БД содержит `@`, `:`, `/`, `#` или другие специальные символы, в `DATABASE_URL` используйте URL-encoded представление пароля.
 
-## HTTPS
+При `ENVIRONMENT=production` backend дополнительно откажется запускаться с дефолтным JWT-секретом, стандартным bootstrap-паролем, тестовым ключом 1С или HTTP-адресом в CORS. Production Compose требует критичные переменные еще до запуска контейнеров.
 
-FastAPI не следует публиковать напрямую в интернет. Перед backend нужен reverse proxy (например, Nginx/Caddy/Traefik) с TLS-сертификатом. Android release-сборка запрещает незашифрованный HTTP и должна получать тот же HTTPS API URL через `CEH_API_BASE_URL`.
+## Проверка конфигурации
 
-## База данных
+Перед запуском проверьте итоговый Compose:
 
-- PostgreSQL должен находиться в закрытой сети и не публиковать порт наружу без необходимости.
-- Перед обновлением выполняйте резервную копию по инструкции `docs/BACKUP.md`.
-- При развертывании новой версии сначала применяется `alembic upgrade head`, затем запускается API.
+```bash
+docker compose --env-file .env.production -f docker-compose.production.yml config
+```
+
+В выводе не должно быть внешних `ports` у `db` и `backend`.
+
+## Первый запуск
+
+```bash
+docker compose --env-file .env.production -f docker-compose.production.yml up -d --build
+```
+
+Backend при старте автоматически выполняет `alembic upgrade head`, после чего запускает FastAPI. Первый администратор создается только если его еще нет.
+
+Проверьте состояние:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.production.yml ps
+curl --fail https://sklad.example.ru/health
+```
+
+## HTTPS и WebSocket
+
+Caddy автоматически получает и обновляет сертификат для `CEH_DOMAIN`. WebSocket `wss://<домен>/api/v1/realtime` идет через тот же reverse proxy без отдельного внешнего порта.
+
+Release Android должен использовать этот же HTTPS origin:
+
+```bash
+gradle -p android :app:assembleRelease -PCEH_API_BASE_URL=https://sklad.example.ru/
+```
+
+Web-панель при production Docker build получает `VITE_API_BASE_URL=https://<домен>/api/v1`; сборка с HTTP URL запрещена.
+
+## База данных и резервные копии
+
+- PostgreSQL хранится в volume `ceh_postgres` и не публикует порт наружу.
+- Перед обновлением выполняйте резервную копию по `docs/BACKUP.md`.
+- CI создает custom-format dump, восстанавливает его в отдельную БД и проверяет Alembic revision и наличие актуальных колонок схемы.
+- Для реального восстановления используйте отдельное окно обслуживания и после restore снова выполните `alembic upgrade head`.
 
 ## Секреты
 
-Пароли БД, JWT secret, ключ 1С и ключ подписи Android нельзя хранить в Git. Для CI/CD используйте GitHub Secrets или секрет-хранилище инфраструктуры.
+Пароли БД, JWT secret, ключ 1С и ключ подписи Android нельзя хранить в Git. Для CI/CD используйте GitHub Secrets или секрет-хранилище инфраструктуры. Файл `.env.production` также нельзя коммитить.
 
 ## Проверка после развертывания
 
 1. `GET /health` возвращает `{"status":"ok"}` через HTTPS.
 2. Вход администратора работает только с рабочими учетными данными.
-3. WebSocket `wss://.../api/v1/realtime` подключается из Android.
-4. 1С проходит проверку отдельного `X-1C-Key`.
-5. Тестовая продажа изменяет остаток и появляется в журнале/отчете.
+3. Web-панель открывается с рабочего домена и не содержит `localhost` API.
+4. WebSocket `wss://.../api/v1/realtime` подключается из Android.
+5. 1С проходит проверку отдельного `X-1C-Key`.
+6. Тестовая продажа изменяет остаток и появляется в журнале/отчете.
+7. Выполнен staging load-test по `docs/LOAD_TEST.md`.
+8. Выполнен Android instrumented smoke workflow.

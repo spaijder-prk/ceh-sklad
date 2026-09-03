@@ -43,6 +43,7 @@ class Location(Base):
     name: Mapped[str] = mapped_column(String(150), unique=True)
     kind: Mapped[LocationKind] = mapped_column(Enum(LocationKind))
     external_1c_id: Mapped[str | None] = mapped_column(String(100), unique=True, nullable=True)
+    is_active: Mapped[bool] = mapped_column(default=True)
 
 
 class User(Base):

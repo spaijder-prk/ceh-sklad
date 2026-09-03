@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .admin_catalog import router as admin_catalog_router
 from .admin_users import router as admin_users_router
 from .api import router
 from .audit import audit_mutations
@@ -21,7 +22,7 @@ async def lifespan(_: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title=settings.app_name, version="0.7.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="0.8.0", lifespan=lifespan)
 app.middleware("http")(audit_mutations)
 app.add_middleware(
     CORSMiddleware,
@@ -34,6 +35,7 @@ app.include_router(router)
 app.include_router(reporting_router)
 app.include_router(integration_1c_router)
 app.include_router(admin_users_router)
+app.include_router(admin_catalog_router)
 
 
 @app.get("/health")

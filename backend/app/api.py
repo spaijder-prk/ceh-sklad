@@ -57,6 +57,8 @@ async def _location(session: AsyncSession, location_id: UUID) -> Location:
     location = await session.get(Location, location_id)
     if location is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Место хранения не найдено")
+    if not location.is_active:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Место хранения архивировано")
     return location
 
 
@@ -87,7 +89,7 @@ async def products(_: User = Depends(get_current_user), session: AsyncSession = 
 
 @router.get("/locations", response_model=list[LocationOut])
 async def locations(user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> list[Location]:
-    stmt = select(Location).order_by(Location.kind, Location.name)
+    stmt = select(Location).where(Location.is_active.is_(True)).order_by(Location.kind, Location.name)
     if user.role == UserRole.REPRESENTATIVE:
         stmt = stmt.where(or_(Location.kind == LocationKind.WAREHOUSE, Location.id == user.location_id))
     return list(await session.scalars(stmt))
@@ -99,7 +101,7 @@ async def stocks(location_id: UUID | None = None, user: User = Depends(get_curre
         select(InventoryBalance, Location, Product)
         .join(Location, Location.id == InventoryBalance.location_id)
         .join(Product, Product.id == InventoryBalance.product_id)
-        .where(Product.is_active.is_(True))
+        .where(Product.is_active.is_(True), Location.is_active.is_(True))
         .order_by(Location.name, Product.name)
     )
     if user.role == UserRole.REPRESENTATIVE:
@@ -239,7 +241,7 @@ async def all_debts(_: User = Depends(require_roles(UserRole.ADMIN, UserRole.MAN
         await session.execute(
             select(Location.id, Location.name, func.coalesce(func.sum(MoneyTransaction.amount), 0))
             .outerjoin(MoneyTransaction, MoneyTransaction.representative_location_id == Location.id)
-            .where(Location.kind == LocationKind.REPRESENTATIVE)
+            .where(Location.kind == LocationKind.REPRESENTATIVE, Location.is_active.is_(True))
             .group_by(Location.id, Location.name)
             .order_by(Location.name)
         )

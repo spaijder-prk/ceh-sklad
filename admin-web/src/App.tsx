@@ -12,56 +12,124 @@ type Stock = {
   wholesale_price: number
 }
 
+type Location = { id: string; name: string; kind: 'warehouse' | 'representative'; external_1c_id?: string | null }
+type Product = { id: string; sku: string; name: string; unit_name: string; retail_price: number; wholesale_price: number }
+type User = { id: string; name: string; login: string; role: 'representative' | 'admin' | 'manager'; location_id?: string | null }
+type Debt = { representative_location_id: string; representative_name: string; debt: number }
+
+type ApiError = { detail?: string }
+
 const API = 'http://localhost:8000/api/v1'
 
 export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem('ceh-token') ?? '')
   const [login, setLogin] = useState('')
   const [password, setPassword] = useState('')
+  const [currentUser, setCurrentUser] = useState<User | null>(null)
   const [stocks, setStocks] = useState<Stock[]>([])
+  const [locations, setLocations] = useState<Location[]>([])
+  const [products, setProducts] = useState<Product[]>([])
+  const [users, setUsers] = useState<User[]>([])
+  const [debts, setDebts] = useState<Debt[]>([])
   const [query, setQuery] = useState('')
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  async function api<T>(path: string, options: RequestInit = {}, currentToken = token): Promise<T> {
+    const headers = new Headers(options.headers)
+    if (currentToken) headers.set('Authorization', `Bearer ${currentToken}`)
+    if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
+    const response = await fetch(`${API}${path}`, { ...options, headers })
+    if (response.status === 401) {
+      signOut()
+      throw new Error('Сессия завершена')
+    }
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`
+      try {
+        const body = await response.json() as ApiError
+        if (body.detail) message = body.detail
+      } catch {
+        // Сервер мог вернуть ответ без JSON.
+      }
+      throw new Error(message)
+    }
+    return response.json() as Promise<T>
+  }
 
   async function signIn(event: FormEvent) {
     event.preventDefault()
     setError('')
-    const response = await fetch(`${API}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ login, password }),
-    })
-    if (!response.ok) {
-      setError('Неверный логин или пароль')
-      return
+    try {
+      const response = await fetch(`${API}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ login, password }),
+      })
+      if (!response.ok) throw new Error('Неверный логин или пароль')
+      const data = await response.json() as { access_token: string }
+      localStorage.setItem('ceh-token', data.access_token)
+      setToken(data.access_token)
+    } catch (e) {
+      setError(String(e).replace('Error: ', ''))
     }
-    const data = await response.json() as { access_token: string }
-    localStorage.setItem('ceh-token', data.access_token)
-    setToken(data.access_token)
   }
 
   function signOut() {
     localStorage.removeItem('ceh-token')
     setToken('')
+    setCurrentUser(null)
     setStocks([])
+    setLocations([])
+    setProducts([])
+    setUsers([])
+    setDebts([])
   }
 
   async function load(currentToken = token) {
     if (!currentToken) return
     setError('')
     try {
-      const response = await fetch(`${API}/stocks`, { headers: { Authorization: `Bearer ${currentToken}` } })
-      if (response.status === 401) {
-        signOut()
-        return
-      }
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      setStocks(await response.json())
+      const me = await api<User>('/auth/me', {}, currentToken)
+      setCurrentUser(me)
+      const [stockRows, locationRows, productRows] = await Promise.all([
+        api<Stock[]>('/stocks', {}, currentToken),
+        api<Location[]>('/locations', {}, currentToken),
+        api<Product[]>('/products', {}, currentToken),
+      ])
+      setStocks(stockRows)
+      setLocations(locationRows)
+      setProducts(productRows)
+      if (me.role === 'admin') setUsers(await api<User[]>('/admin/users', {}, currentToken))
+      else setUsers([])
+      if (me.role === 'admin' || me.role === 'manager') setDebts(await api<Debt[]>('/representatives/debts/all', {}, currentToken))
+      else setDebts([])
     } catch (e) {
-      setError(`Не удалось получить остатки: ${String(e)}`)
+      setError(String(e).replace('Error: ', ''))
+    }
+  }
+
+  async function action(path: string, body: unknown, success: string) {
+    setError('')
+    setNotice('')
+    try {
+      await api(path, { method: 'POST', body: JSON.stringify(body) })
+      setNotice(success)
+      await load()
+    } catch (e) {
+      setError(String(e).replace('Error: ', ''))
     }
   }
 
   useEffect(() => { if (token) void load(token) }, [token])
+
+  useEffect(() => {
+    if (!token) return
+    const wsBase = API.replace('http://', 'ws://').replace('https://', 'wss://').replace('/api/v1', '')
+    const socket = new WebSocket(`${wsBase}/api/v1/realtime?token=${encodeURIComponent(token)}`)
+    socket.onmessage = () => void load(token)
+    return () => socket.close()
+  }, [token])
 
   const filtered = useMemo(() => {
     const value = query.trim().toLowerCase()
@@ -84,23 +152,36 @@ export default function App() {
     )
   }
 
+  if (currentUser?.role === 'representative') {
+    return <main><section className="panel"><h1>Цех Склад</h1><p>Для торгового представителя предназначено Android-приложение.</p><button onClick={signOut}>Выйти</button></section></main>
+  }
+
   const totalPositions = new Set(stocks.map((item) => item.product_id)).size
-  const warehouses = new Set(stocks.map((item) => item.location_id)).size
+  const warehouseCount = locations.filter((item) => item.kind === 'warehouse').length
+  const representativeCount = locations.filter((item) => item.kind === 'representative').length
 
   return (
     <main>
       <header>
-        <div><p className="eyebrow">Панель администратора / руководителя</p><h1>Цех Склад</h1></div>
+        <div>
+          <p className="eyebrow">{currentUser?.role === 'manager' ? 'Панель руководителя' : 'Панель администратора'}</p>
+          <h1>Цех Склад</h1>
+          <small>{currentUser?.name}</small>
+        </div>
         <div className="actions"><button onClick={() => void load()}>Обновить</button><button className="secondary" onClick={signOut}>Выйти</button></div>
       </header>
+
+      {error && <p className="message error">{error}</p>}
+      {notice && <p className="message notice">{notice}</p>}
+
       <section className="metrics">
         <article><span>Товарных позиций</span><strong>{totalPositions}</strong></article>
-        <article><span>Мест хранения</span><strong>{warehouses}</strong></article>
-        <article><span>Строк остатков</span><strong>{stocks.length}</strong></article>
+        <article><span>Складов</span><strong>{warehouseCount}</strong></article>
+        <article><span>Представителей</span><strong>{representativeCount}</strong></article>
       </section>
+
       <section className="panel">
         <div className="toolbar"><h2>Остатки и цены</h2><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Товар, артикул или склад" /></div>
-        {error && <p className="error">{error}</p>}
         <div className="table-wrap">
           <table>
             <thead><tr><th>Склад / представитель</th><th>Товар</th><th>Остаток</th><th>Розница</th><th>Опт</th></tr></thead>
@@ -108,6 +189,82 @@ export default function App() {
           </table>
         </div>
       </section>
+
+      <section className="panel">
+        <h2>Задолженность торговых представителей</h2>
+        <div className="table-wrap"><table><thead><tr><th>Представитель</th><th>Задолженность</th></tr></thead><tbody>{debts.map((item) => <tr key={item.representative_location_id}><td>{item.representative_name}</td><td>{item.debt}</td></tr>)}</tbody></table></div>
+      </section>
+
+      {currentUser?.role === 'admin' && <AdminTools locations={locations} products={products} users={users} action={action} />}
     </main>
+  )
+}
+
+function AdminTools({ locations, products, users, action }: { locations: Location[]; products: Product[]; users: User[]; action: (path: string, body: unknown, success: string) => Promise<void> }) {
+  const warehouses = locations.filter((item) => item.kind === 'warehouse')
+  const representatives = locations.filter((item) => item.kind === 'representative')
+
+  async function createLocation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    await action('/admin/locations', { name: form.get('name'), kind: form.get('kind') }, 'Место хранения создано')
+    event.currentTarget.reset()
+  }
+
+  async function createProduct(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    await action('/admin/products', {
+      sku: form.get('sku'), name: form.get('name'), unit_name: form.get('unit_name'),
+      retail_price: Number(form.get('retail_price')), wholesale_price: Number(form.get('wholesale_price')),
+    }, 'Товар создан')
+    event.currentTarget.reset()
+  }
+
+  async function createUser(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    const role = String(form.get('role'))
+    await action('/admin/users', {
+      name: form.get('name'), login: form.get('login'), password: form.get('password'), role,
+      location_id: role === 'representative' ? form.get('location_id') : null,
+    }, 'Пользователь создан')
+    event.currentTarget.reset()
+  }
+
+  async function adjust(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    await action('/stock/adjustments', {
+      location_id: form.get('location_id'),
+      items: [{ product_id: form.get('product_id'), quantity_delta: Number(form.get('quantity_delta')) }],
+      comment: form.get('comment'),
+    }, 'Остаток скорректирован')
+  }
+
+  async function move(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    const operation = String(form.get('operation'))
+    const path = operation === 'issue' ? '/stock/issue-to-representative' : '/stock/transfers'
+    await action(path, {
+      source_location_id: form.get('source_location_id'), destination_location_id: form.get('destination_location_id'),
+      items: [{ product_id: form.get('product_id'), quantity: Number(form.get('quantity')) }], comment: form.get('comment') || null,
+    }, operation === 'issue' ? 'Товар выдан представителю' : 'Перемещение проведено')
+  }
+
+  return (
+    <>
+      <section className="panel"><h2>Администрирование справочников</h2><div className="forms-grid">
+        <form onSubmit={createLocation}><h3>Новое место хранения</h3><input name="name" required placeholder="Название" /><select name="kind"><option value="warehouse">Склад</option><option value="representative">Торговый представитель</option></select><button>Создать</button></form>
+        <form onSubmit={createProduct}><h3>Новый товар</h3><input name="sku" required placeholder="Артикул" /><input name="name" required placeholder="Название" /><input name="unit_name" defaultValue="шт" required placeholder="Единица" /><input name="retail_price" type="number" min="0" step="0.01" required placeholder="Розничная цена" /><input name="wholesale_price" type="number" min="0" step="0.01" required placeholder="Оптовая цена" /><button>Создать</button></form>
+        <form onSubmit={createUser}><h3>Новый пользователь</h3><input name="name" required placeholder="Имя" /><input name="login" required minLength={3} placeholder="Логин" /><input name="password" type="password" required minLength={8} placeholder="Пароль" /><select name="role"><option value="representative">Торговый представитель</option><option value="manager">Руководитель</option><option value="admin">Администратор</option></select><select name="location_id"><option value="">Виртуальный склад</option>{representatives.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select><button>Создать</button><small>Пользователей: {users.length}</small></form>
+      </div></section>
+
+      <section className="panel"><h2>Операции склада</h2><div className="forms-grid">
+        <form onSubmit={adjust}><h3>Начальный остаток / корректировка</h3><select name="location_id" required><option value="">Место хранения</option>{locations.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select><select name="product_id" required><option value="">Товар</option>{products.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select><input name="quantity_delta" type="number" step="0.001" required placeholder="Изменение количества" /><input name="comment" required minLength={3} placeholder="Причина корректировки" /><button>Провести</button></form>
+        <form onSubmit={move}><h3>Перемещение / выдача</h3><select name="operation"><option value="transfer">Склад → склад</option><option value="issue">Выдача представителю</option></select><select name="source_location_id" required><option value="">Источник</option>{warehouses.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select><select name="destination_location_id" required><option value="">Получатель</option>{locations.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select><select name="product_id" required><option value="">Товар</option>{products.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select><input name="quantity" type="number" min="0.001" step="0.001" required placeholder="Количество" /><input name="comment" placeholder="Комментарий" /><button>Провести</button></form>
+      </div></section>
+    </>
   )
 }

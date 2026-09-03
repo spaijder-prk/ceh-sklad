@@ -15,7 +15,7 @@ from .models import (
     StockDocumentLine,
     StockMovement,
 )
-from .schemas import MovementItemIn, PriceType
+from .schemas import AdjustmentItemIn, MovementItemIn, PriceType
 
 
 async def _locked_balance(session: AsyncSession, location_id: UUID, product_id: UUID) -> InventoryBalance:
@@ -67,6 +67,38 @@ async def create_transfer(
         session.add(StockDocumentLine(document_id=document.id, product_id=item.product_id, quantity=item.quantity))
         session.add(StockMovement(document_id=document.id, location_id=source_location_id, product_id=item.product_id, quantity_delta=-item.quantity))
         session.add(StockMovement(document_id=document.id, location_id=destination_location_id, product_id=item.product_id, quantity_delta=item.quantity))
+
+    await session.commit()
+    return document
+
+
+async def create_adjustment(
+    session: AsyncSession,
+    *,
+    location_id: UUID,
+    items: list[AdjustmentItemIn],
+    comment: str,
+    created_by_id: UUID,
+) -> StockDocument:
+    if not items:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Не указаны товары")
+    if all(item.quantity_delta == 0 for item in items):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Корректировка не содержит изменений")
+
+    document = StockDocument(kind=StockDocumentKind.ADJUSTMENT, created_by_id=created_by_id, comment=comment)
+    session.add(document)
+    await session.flush()
+
+    for item in items:
+        if item.quantity_delta == 0:
+            continue
+        balance = await _locked_balance(session, location_id, item.product_id)
+        new_quantity = balance.quantity + item.quantity_delta
+        if new_quantity < 0:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Корректировка уводит остаток товара {item.product_id} в минус")
+        balance.quantity = new_quantity
+        session.add(StockDocumentLine(document_id=document.id, product_id=item.product_id, quantity=abs(item.quantity_delta)))
+        session.add(StockMovement(document_id=document.id, location_id=location_id, product_id=item.product_id, quantity_delta=item.quantity_delta))
 
     await session.commit()
     return document

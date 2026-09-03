@@ -4,6 +4,7 @@ from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
+from .account_security import router as account_security_router
 from .admin_catalog import router as admin_catalog_router
 from .admin_users import router as admin_users_router
 from .api import router
@@ -23,7 +24,7 @@ async def lifespan(_: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title=settings.app_name, version="0.9.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="0.10.0", lifespan=lifespan)
 app.middleware("http")(audit_mutations)
 app.add_middleware(
     CORSMiddleware,
@@ -33,6 +34,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(router)
+app.include_router(account_security_router)
 app.include_router(reporting_router)
 app.include_router(integration_1c_router)
 app.include_router(admin_users_router)

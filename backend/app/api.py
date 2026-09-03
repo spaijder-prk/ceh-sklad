@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .auth import create_access_token, decode_user_id, get_current_user, hash_password, require_roles, verify_password
+from .auth import create_access_token, decode_user_id, get_current_user, hash_password, require_roles, token_matches_user, validate_new_password, verify_password
 from .database import SessionFactory, get_session
 from .models import InventoryBalance, Location, LocationKind, MoneyTransaction, Product, StockDocumentKind, User, UserRole
 from .realtime import hub
@@ -161,6 +161,7 @@ async def users(_: User = Depends(require_roles(UserRole.ADMIN)), session: Async
 async def create_user(payload: UserCreateIn, _: User = Depends(require_roles(UserRole.ADMIN)), session: AsyncSession = Depends(get_session)) -> UserOut:
     if await session.scalar(select(User).where(User.login == payload.login)):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Пользователь с таким логином уже существует")
+    validate_new_password(payload.password, payload.login)
     if payload.role == UserRole.REPRESENTATIVE:
         if payload.location_id is None:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Для торгового представителя нужен виртуальный склад")
@@ -255,7 +256,7 @@ async def realtime(websocket: WebSocket, token: str, location_id: UUID | None = 
         user_id = decode_user_id(token)
         async with SessionFactory() as session:
             user = await session.get(User, user_id)
-            if user is None or not user.is_active:
+            if user is None or not user.is_active or not token_matches_user(token, user):
                 await websocket.close(code=4401)
                 return
             if user.role == UserRole.REPRESENTATIVE and location_id not in (None, user.location_id):

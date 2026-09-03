@@ -10,6 +10,17 @@ val releaseApiBaseUrl = providers.gradleProperty("CEH_API_BASE_URL")
     .get()
     .let { if (it.endsWith('/')) it else "$it/" }
 
+val releaseStoreFile = providers.environmentVariable("CEH_ANDROID_KEYSTORE_PATH").orNull
+val releaseStorePassword = providers.environmentVariable("CEH_ANDROID_KEYSTORE_PASSWORD").orNull
+val releaseKeyAlias = providers.environmentVariable("CEH_ANDROID_KEY_ALIAS").orNull
+val releaseKeyPassword = providers.environmentVariable("CEH_ANDROID_KEY_PASSWORD").orNull
+val releaseSigningConfigured = listOf(
+    releaseStoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { !it.isNullOrBlank() }
+
 android {
     namespace = "ru.ceh.sklad"
     compileSdk = 35
@@ -22,6 +33,17 @@ android {
         versionName = "0.4.0"
     }
 
+    signingConfigs {
+        if (releaseSigningConfigured) {
+            create("release") {
+                storeFile = file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         getByName("debug") {
             buildConfigField("String", "API_BASE_URL", "\"http://10.0.2.2:8000/\"")
@@ -29,6 +51,7 @@ android {
         getByName("release") {
             buildConfigField("String", "API_BASE_URL", "\"$releaseApiBaseUrl\"")
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 

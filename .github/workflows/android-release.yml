@@ -1,0 +1,65 @@
+name: Подписанный Android release
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_base_url:
+        description: HTTPS URL backend, например https://sklad.example.ru/
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Собрать и проверить подписанный APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+      - name: Установить Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Установить Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+      - name: Проверить URL и наличие release secrets
+        env:
+          API_BASE_URL: ${{ inputs.api_base_url }}
+          KEYSTORE_BASE64: ${{ secrets.CEH_ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CEH_ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CEH_ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.CEH_ANDROID_KEY_PASSWORD }}
+        run: |
+          case "$API_BASE_URL" in https://*) ;; *) echo "api_base_url должен использовать HTTPS"; exit 2 ;; esac
+          test -n "$KEYSTORE_BASE64" || { echo "Не задан CEH_ANDROID_KEYSTORE_BASE64"; exit 2; }
+          test -n "$KEYSTORE_PASSWORD" || { echo "Не задан CEH_ANDROID_KEYSTORE_PASSWORD"; exit 2; }
+          test -n "$KEY_ALIAS" || { echo "Не задан CEH_ANDROID_KEY_ALIAS"; exit 2; }
+          test -n "$KEY_PASSWORD" || { echo "Не задан CEH_ANDROID_KEY_PASSWORD"; exit 2; }
+      - name: Подготовить keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.CEH_ANDROID_KEYSTORE_BASE64 }}
+        run: echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/ceh-sklad-release.keystore"
+      - name: Собрать подписанный release APK
+        env:
+          CEH_ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/ceh-sklad-release.keystore
+          CEH_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.CEH_ANDROID_KEYSTORE_PASSWORD }}
+          CEH_ANDROID_KEY_ALIAS: ${{ secrets.CEH_ANDROID_KEY_ALIAS }}
+          CEH_ANDROID_KEY_PASSWORD: ${{ secrets.CEH_ANDROID_KEY_PASSWORD }}
+        run: gradle -p android :app:assembleRelease -PCEH_API_BASE_URL="${{ inputs.api_base_url }}" --stacktrace
+      - name: Проверить подпись APK
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          test -n "$APKSIGNER"
+          "$APKSIGNER" verify --verbose android/app/build/outputs/apk/release/app-release.apk
+      - name: Сохранить подписанный APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ceh-sklad-release-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 14

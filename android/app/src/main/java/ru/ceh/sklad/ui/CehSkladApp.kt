@@ -87,6 +87,20 @@ fun CehSkladApp() {
             lastSyncAt = snapshot.syncedAt
         }
 
+        fun clearUiSession(message: String? = null) {
+            user = null
+            stocks = emptyList()
+            locations = emptyList()
+            history = RepresentativeHistory()
+            debt = 0.0
+            lastSyncAt = null
+            pendingCount = 0
+            pendingConflicts = emptyList()
+            screen = "warehouses"
+            notice = null
+            if (message != null) error = message
+        }
+
         suspend fun refresh() {
             val current = user ?: return
             loading = true
@@ -195,14 +209,7 @@ fun CehSkladApp() {
                         TextButton(onClick = {
                             scope.launch {
                                 repository.logout()
-                                user = null
-                                stocks = emptyList()
-                                locations = emptyList()
-                                history = RepresentativeHistory()
-                                debt = 0.0
-                                lastSyncAt = null
-                                pendingCount = 0
-                                pendingConflicts = emptyList()
+                                clearUiSession()
                             }
                         }) { Text("Выйти") }
                     },
@@ -239,6 +246,7 @@ fun CehSkladApp() {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { screen = "operations" }) { Text("Операции") }
                     Button(onClick = { screen = "history" }) { Text("История") }
+                    Button(onClick = { screen = "security" }) { Text("Безопасность") }
                 }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 notice?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
@@ -265,6 +273,19 @@ fun CehSkladApp() {
                         },
                     )
                     "history" -> HistoryScreen(history)
+                    "security" -> SecurityScreen(enabled = !loading) { currentPassword, newPassword ->
+                        if (!loading) {
+                            scope.launch {
+                                loading = true
+                                error = null
+                                notice = null
+                                runCatching { repository.changePassword(currentPassword, newPassword) }
+                                    .onSuccess { message -> clearUiSession("$message. Войдите новым паролем.") }
+                                    .onFailure { failure -> error = failure.message ?: "Не удалось сменить пароль" }
+                                loading = false
+                            }
+                        }
+                    }
                     else -> StockList("Остатки на складах", warehouseStocks)
                 }
             }
@@ -281,6 +302,37 @@ private fun LoginScreen(login: String, password: String, loading: Boolean, error
         OutlinedTextField(password, onPasswordChanged, label = { Text("Пароль") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
         error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 10.dp)) }
         Button(onClick = onSubmit, enabled = !loading && login.isNotBlank() && password.isNotBlank(), modifier = Modifier.padding(top = 16.dp)) { Text(if (loading) "Вход..." else "Войти") }
+    }
+}
+
+@Composable
+private fun SecurityScreen(enabled: Boolean, onChangePassword: (String, String) -> Unit) {
+    var currentPassword by remember { mutableStateOf("") }
+    var newPassword by remember { mutableStateOf("") }
+    val validNewPassword = newPassword.length >= 10 && newPassword.any { it.isLetter() } && newPassword.any { it.isDigit() }
+
+    Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("Безопасность", style = MaterialTheme.typography.titleLarge)
+        Text("После смены пароля все старые сессии будут отключены. Неподтвержденные операции в очереди не удаляются.")
+        OutlinedTextField(
+            value = currentPassword,
+            onValueChange = { currentPassword = it.take(128) },
+            label = { Text("Текущий пароль") },
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = newPassword,
+            onValueChange = { newPassword = it.take(128) },
+            label = { Text("Новый пароль") },
+            supportingText = { Text("Минимум 10 символов, обязательны буквы и цифры") },
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Button(
+            enabled = enabled && currentPassword.isNotBlank() && validNewPassword,
+            onClick = { onChangePassword(currentPassword, newPassword) },
+        ) { Text("Сменить пароль") }
     }
 }
 

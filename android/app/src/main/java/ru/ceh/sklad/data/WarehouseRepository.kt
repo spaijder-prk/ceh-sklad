@@ -19,7 +19,8 @@ import retrofit2.converter.gson.GsonConverterFactory
 import ru.ceh.sklad.BuildConfig
 
 class WarehouseRepository(context: Context) {
-    private val storage = AppStorage(context)
+    private val appContext = context.applicationContext
+    private val storage = AppStorage(appContext)
     private val gson = Gson()
     private var token: String? = storage.savedToken()
     private var activeUserId: String? = storage.cachedUser()?.id
@@ -132,6 +133,7 @@ class WarehouseRepository(context: Context) {
                 createdAt = System.currentTimeMillis(),
             )
         )
+        PendingSyncScheduler.schedule(appContext)
         return SubmissionResult(
             confirmed = false,
             message = "Нет подтверждения сервера. Операция сохранена в очередь и пока НЕ проведена.",

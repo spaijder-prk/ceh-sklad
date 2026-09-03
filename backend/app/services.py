@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import (
     InventoryBalance,
+    Location,
     MoneyTransaction,
     MoneyTransactionKind,
     Product,
@@ -322,6 +323,12 @@ async def create_cash_handover(
         if existing is not None:
             _check_money_key(existing, client_payload_hash)
             return existing
+
+    representative = await session.scalar(
+        select(Location).where(Location.id == representative_location_id).with_for_update()
+    )
+    if representative is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Торговый представитель не найден")
 
     debt = await representative_debt(session, representative_location_id)
     if amount > debt:

@@ -1,9 +1,13 @@
 package ru.ceh.sklad.data
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import com.google.gson.Gson
 import java.io.IOException
 import java.util.UUID
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -21,6 +25,7 @@ class WarehouseRepository(context: Context) {
     private var activeUserId: String? = storage.cachedUser()?.id
 
     private val client = OkHttpClient.Builder()
+        .pingInterval(25, TimeUnit.SECONDS)
         .addInterceptor { chain ->
             val request = chain.request().newBuilder().apply {
                 token?.let { header("Authorization", "Bearer $it") }
@@ -45,10 +50,6 @@ class WarehouseRepository(context: Context) {
         return user
     }
 
-    /**
-     * При отсутствии сети разрешаем открыть только последний локальный снимок.
-     * Если сервер явно вернул 401, локальная сессия удаляется.
-     */
     suspend fun restoreSession(): UserInfo? {
         if (token == null) return null
         return try {
@@ -68,7 +69,7 @@ class WarehouseRepository(context: Context) {
         }
     }
 
-    fun logout() {
+    suspend fun logout() {
         token = null
         activeUserId = null
         storage.clearSession()
@@ -78,13 +79,13 @@ class WarehouseRepository(context: Context) {
         val stocks = api.getStocks()
         val locations = api.getLocations()
         val debt = locationId?.let { api.getDebt(it).debt } ?: 0.0
-        return CachedSnapshot(stocks, locations, debt, System.currentTimeMillis()).also(storage::saveSnapshot)
+        return CachedSnapshot(stocks, locations, debt, System.currentTimeMillis()).also { storage.saveSnapshot(it) }
     }
 
-    fun cachedSnapshot(): CachedSnapshot? = storage.cachedSnapshot()
-    fun pendingCount(): Int = activeUserId?.let(storage::pendingCount) ?: 0
+    suspend fun cachedSnapshot(): CachedSnapshot? = storage.cachedSnapshot()
+    suspend fun pendingCount(): Int = activeUserId?.let { storage.pendingCount(it) } ?: 0
 
-    fun discardPending(operationKey: String) {
+    suspend fun discardPending(operationKey: String) {
         storage.removePending(operationKey)
     }
 
@@ -120,7 +121,7 @@ class WarehouseRepository(context: Context) {
         }
     }
 
-    private fun queueOperation(type: String, operationKey: String, payload: Any): SubmissionResult {
+    private suspend fun queueOperation(type: String, operationKey: String, payload: Any): SubmissionResult {
         val userId = activeUserId ?: error("Нет активного пользователя для очереди операций")
         storage.enqueuePending(
             PendingOperation(
@@ -183,24 +184,65 @@ class WarehouseRepository(context: Context) {
         return PendingSyncResult(sent, storage.pendingCount(userId), conflicts.values.toList())
     }
 
-    fun connectRealtime(onStockChanged: () -> Unit): WebSocket? {
+    fun connectRealtime(onRefreshNeeded: () -> Unit): RealtimeSubscription? {
         val currentToken = token ?: return null
         val wsBase = BuildConfig.API_BASE_URL.replace("https://", "wss://").replace("http://", "ws://")
         val request = Request.Builder().url("${wsBase}api/v1/realtime?token=$currentToken").build()
-        return client.newWebSocket(request, object : WebSocketListener() {
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                if (text.contains("stock_changed")) onStockChanged()
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                // Пользователь продолжит видеть последний подтвержденный снимок; ручное обновление повторит запрос.
-            }
-        })
+        return RealtimeSubscription(client, request, onRefreshNeeded)
     }
 
     private companion object {
         const val TYPE_SALE = "sale"
         const val TYPE_RETURN = "representative_return"
         const val TYPE_CASH = "cash_handover"
+    }
+}
+
+class RealtimeSubscription(
+    private val client: OkHttpClient,
+    private val request: Request,
+    private val onRefreshNeeded: () -> Unit,
+) {
+    private val handler = Handler(Looper.getMainLooper())
+    private val stopped = AtomicBoolean(false)
+    private var socket: WebSocket? = null
+    private val reconnect = Runnable { open() }
+
+    init {
+        open()
+    }
+
+    private fun open() {
+        if (stopped.get()) return
+        socket = client.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                onRefreshNeeded()
+            }
+
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                if (text.contains("stock_changed")) onRefreshNeeded()
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                scheduleReconnect()
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (code !in setOf(4401, 4403)) scheduleReconnect()
+            }
+        })
+    }
+
+    private fun scheduleReconnect() {
+        if (stopped.get()) return
+        handler.removeCallbacks(reconnect)
+        handler.postDelayed(reconnect, 3_000L)
+    }
+
+    fun close() {
+        if (!stopped.compareAndSet(false, true)) return
+        handler.removeCallbacksAndMessages(null)
+        socket?.close(1000, "Закрытие экрана")
+        socket = null
     }
 }

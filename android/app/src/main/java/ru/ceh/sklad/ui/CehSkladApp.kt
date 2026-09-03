@@ -32,6 +32,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import ru.ceh.sklad.data.CachedSnapshot
 import ru.ceh.sklad.data.CashHandoverRequest
 import ru.ceh.sklad.data.LocationItem
 import ru.ceh.sklad.data.MovementItem
@@ -68,7 +69,7 @@ fun CehSkladApp() {
         var refreshKey by remember { mutableStateOf(0) }
         var screen by remember { mutableStateOf("warehouses") }
 
-        fun applySnapshot(snapshot: ru.ceh.sklad.data.CachedSnapshot) {
+        fun applySnapshot(snapshot: CachedSnapshot) {
             stocks = snapshot.stocks
             locations = snapshot.locations
             debt = snapshot.debt
@@ -79,23 +80,24 @@ fun CehSkladApp() {
             val current = user ?: return
             loading = true
             error = null
-            runCatching {
+            try {
                 val sync = repository.syncPendingOperations()
                 pendingCount = sync.pending
                 pendingConflicts = sync.conflicts
                 if (sync.sent > 0) notice = "Отправлено из очереди и подтверждено сервером: ${sync.sent}"
-                repository.loadSnapshot(current.location_id)
-            }.onSuccess { applySnapshot(it) }
-                .onFailure { failure ->
-                    pendingCount = repository.pendingCount()
-                    repository.cachedSnapshot()?.let {
-                        applySnapshot(it)
-                        error = "Нет связи с сервером. Показаны последние подтвержденные данные."
-                    } ?: run {
-                        error = failure.message ?: "Не удалось получить данные"
-                    }
+                applySnapshot(repository.loadSnapshot(current.location_id))
+            } catch (failure: Exception) {
+                pendingCount = repository.pendingCount()
+                val cached = repository.cachedSnapshot()
+                if (cached != null) {
+                    applySnapshot(cached)
+                    error = "Нет связи с сервером. Показаны последние подтвержденные данные."
+                } else {
+                    error = failure.message ?: "Не удалось получить данные"
                 }
-            loading = false
+            } finally {
+                loading = false
+            }
         }
 
         LaunchedEffect(Unit) {
@@ -110,8 +112,8 @@ fun CehSkladApp() {
 
         DisposableEffect(user) {
             if (user == null) return@DisposableEffect onDispose { }
-            val webSocket = repository.connectRealtime { scope.launch { refreshKey += 1 } }
-            onDispose { webSocket?.close(1000, "Закрытие экрана") }
+            val subscription = repository.connectRealtime { scope.launch { refreshKey += 1 } }
+            onDispose { subscription?.close() }
         }
 
         if (restoring) {
@@ -151,13 +153,14 @@ fun CehSkladApp() {
                 loading = true
                 error = null
                 notice = null
-                runCatching { block() }
-                    .onSuccess { result ->
-                        notice = result.message
-                        pendingCount = repository.pendingCount()
-                        if (result.confirmed) refreshKey += 1
-                    }
-                    .onFailure { error = it.message ?: "Операция не выполнена" }
+                val result = runCatching { block() }
+                result.onSuccess { submission ->
+                    notice = submission.message
+                    if (submission.confirmed) refreshKey += 1
+                }.onFailure {
+                    error = it.message ?: "Операция не выполнена"
+                }
+                pendingCount = repository.pendingCount()
                 loading = false
             }
         }
@@ -169,13 +172,16 @@ fun CehSkladApp() {
                     actions = {
                         TextButton(onClick = { refreshKey += 1 }) { Text("Обновить") }
                         TextButton(onClick = {
-                            repository.logout()
-                            user = null
-                            stocks = emptyList()
-                            locations = emptyList()
-                            debt = 0.0
-                            lastSyncAt = null
-                            pendingConflicts = emptyList()
+                            scope.launch {
+                                repository.logout()
+                                user = null
+                                stocks = emptyList()
+                                locations = emptyList()
+                                debt = 0.0
+                                lastSyncAt = null
+                                pendingCount = 0
+                                pendingConflicts = emptyList()
+                            }
                         }) { Text("Выйти") }
                     },
                 )
@@ -195,9 +201,11 @@ fun CehSkladApp() {
                             Text("Конфликт очереди", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
                             Text(conflict.message, style = MaterialTheme.typography.bodySmall)
                             TextButton(onClick = {
-                                repository.discardPending(conflict.operationKey)
-                                pendingConflicts = pendingConflicts.filterNot { it.operationKey == conflict.operationKey }
-                                pendingCount = repository.pendingCount()
+                                scope.launch {
+                                    repository.discardPending(conflict.operationKey)
+                                    pendingConflicts = pendingConflicts.filterNot { it.operationKey == conflict.operationKey }
+                                    pendingCount = repository.pendingCount()
+                                }
                             }) { Text("Удалить неподтвержденную операцию") }
                         }
                     }
@@ -219,9 +227,7 @@ fun CehSkladApp() {
                         operationsEnabled = !loading,
                         onSale = { product, quantity, priceType ->
                             runOperation {
-                                repository.createSale(SaleRequest(currentUser.location_id!!, listOf(MovementItem(product.product_id, quantity)), priceType)).also {
-                                    // До confirmed=true локальный остаток не изменяется.
-                                }
+                                repository.createSale(SaleRequest(currentUser.location_id!!, listOf(MovementItem(product.product_id, quantity)), priceType))
                             }
                         },
                         onReturn = { product, quantity, warehouseId ->

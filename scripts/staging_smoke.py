@@ -13,6 +13,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Read-only smoke-проверка staging-контура ceh-sklad")
     parser.add_argument("--base-url", required=True, help="HTTPS origin, например https://staging-sklad.example.ru")
     parser.add_argument("--expected-location-id", required=True, help="Ожидаемый виртуальный склад представителя")
+    parser.add_argument(
+        "--require-unf-ready",
+        action="store_true",
+        help="Завершить smoke ошибкой, если в UNF outbox есть объекты без сопоставлений",
+    )
     parser.add_argument("--timeout", type=float, default=15.0)
     return parser.parse_args()
 
@@ -85,15 +90,39 @@ async def main() -> None:
         print("История товарных и денежных операций читается")
 
         if integration_key:
+            integration_headers = {"X-1C-Key": integration_key}
+            profile = await client.get(
+                "/api/v1/integration/1c/unf/profile",
+                headers=integration_headers,
+            )
+            profile.raise_for_status()
+            profile_data = profile.json()
+            if profile_data.get("target_configuration") != "1С:Управление нашей фирмой":
+                raise RuntimeError(f"Неожиданный профиль 1С: {profile_data}")
+            if profile_data.get("deployment") != "cloud":
+                raise RuntimeError(f"Профиль 1С не помечен как cloud: {profile_data}")
+
             outbox = await client.get(
-                "/api/v1/integration/1c/outbox",
-                params={"limit": 1},
-                headers={"X-1C-Key": integration_key},
+                "/api/v1/integration/1c/unf/outbox",
+                params={"limit": 20},
+                headers=integration_headers,
             )
             outbox.raise_for_status()
-            print(f"Контур 1С: ключ принят, outbox доступен ({len(outbox.json())} элементов в выборке)")
+            rows = outbox.json()
+            blocked = [row for row in rows if not row.get("ready_for_unf", False)]
+            print(
+                "Контур 1С:УНФ Cloud: профиль принят, "
+                f"outbox={len(rows)}, готовы={len(rows) - len(blocked)}, заблокированы сопоставлениями={len(blocked)}"
+            )
+            for row in blocked[:5]:
+                reasons = "; ".join(row.get("blocking_reasons") or [])
+                print(f"  UNF blocked {row.get('kind')} {row.get('internal_id')}: {reasons}")
+            if blocked and args.require_unf_ready:
+                raise RuntimeError(
+                    f"UNF outbox содержит {len(blocked)} объектов без обязательных сопоставлений"
+                )
         else:
-            print("Контур 1С: пропущен, CEH_STAGING_1C_KEY не задан")
+            print("Контур 1С:УНФ Cloud: пропущен, CEH_STAGING_1C_KEY не задан")
 
     parsed = urlparse(base_url)
     websocket_scheme = "wss"

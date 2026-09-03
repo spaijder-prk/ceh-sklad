@@ -2,6 +2,8 @@ package ru.ceh.sklad.data
 
 data class LoginRequest(val login: String, val password: String)
 data class TokenResponse(val access_token: String, val token_type: String)
+data class PasswordChangeRequest(val current_password: String, val new_password: String)
+data class PasswordOperationResponse(val message: String)
 data class UserInfo(val id: String, val name: String, val login: String, val role: String, val location_id: String?)
 data class LocationItem(val id: String, val name: String, val kind: String)
 

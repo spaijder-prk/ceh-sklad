@@ -7,6 +7,7 @@ from .api import router
 from .bootstrap import ensure_bootstrap_admin
 from .config import settings
 from .database import engine
+from .integration_1c import router as integration_1c_router
 
 
 @asynccontextmanager
@@ -17,7 +18,7 @@ async def lifespan(_: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title=settings.app_name, version="0.2.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="0.3.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -26,6 +27,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(router)
+app.include_router(integration_1c_router)
 
 
 @app.get("/health")

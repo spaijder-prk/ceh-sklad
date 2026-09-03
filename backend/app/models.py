@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Numeric, String, UniqueConstraint, func
+from sqlalchemy import JSON, DateTime, Enum, ForeignKey, Numeric, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -95,6 +95,8 @@ class StockDocument(Base):
     destination_location_id: Mapped[UUID | None] = mapped_column(ForeignKey("locations.id"), nullable=True)
     created_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     comment: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    external_1c_id: Mapped[str | None] = mapped_column(String(100), unique=True, nullable=True)
+    synced_1c_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
@@ -129,4 +131,23 @@ class MoneyTransaction(Base):
     stock_document_id: Mapped[UUID | None] = mapped_column(ForeignKey("stock_documents.id"), nullable=True)
     created_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     comment: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    external_1c_id: Mapped[str | None] = mapped_column(String(100), unique=True, nullable=True)
+    synced_1c_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class IntegrationExchangeLog(Base):
+    __tablename__ = "integration_exchange_logs"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    direction: Mapped[str] = mapped_column(String(20), index=True)
+    operation_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    entity_type: Mapped[str] = mapped_column(String(50), index=True)
+    entity_internal_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    external_1c_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    payload: Mapped[dict] = mapped_column(JSON)
+    error_message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

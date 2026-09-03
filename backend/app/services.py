@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -78,14 +79,23 @@ async def create_adjustment(
     location_id: UUID,
     items: list[AdjustmentItemIn],
     comment: str,
-    created_by_id: UUID,
+    created_by_id: UUID | None,
+    external_1c_id: str | None = None,
+    mark_synced_1c: bool = False,
+    commit: bool = True,
 ) -> StockDocument:
     if not items:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Не указаны товары")
     if all(item.quantity_delta == 0 for item in items):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Корректировка не содержит изменений")
 
-    document = StockDocument(kind=StockDocumentKind.ADJUSTMENT, created_by_id=created_by_id, comment=comment)
+    document = StockDocument(
+        kind=StockDocumentKind.ADJUSTMENT,
+        created_by_id=created_by_id,
+        comment=comment,
+        external_1c_id=external_1c_id,
+        synced_1c_at=datetime.now(UTC) if mark_synced_1c else None,
+    )
     session.add(document)
     await session.flush()
 
@@ -100,7 +110,10 @@ async def create_adjustment(
         session.add(StockDocumentLine(document_id=document.id, product_id=item.product_id, quantity=abs(item.quantity_delta)))
         session.add(StockMovement(document_id=document.id, location_id=location_id, product_id=item.product_id, quantity_delta=item.quantity_delta))
 
-    await session.commit()
+    if commit:
+        await session.commit()
+    else:
+        await session.flush()
     return document
 
 

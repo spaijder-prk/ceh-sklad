@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     access_token_minutes: int = 720
     bootstrap_admin_login: str | None = None
     bootstrap_admin_password: str | None = None
+    integration_1c_api_key: str | None = None
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

@@ -54,8 +54,10 @@ jobs:
           cat "$DUMP" | docker exec -i "$PG_CONTAINER" pg_restore -U ceh -d ceh_sklad_restore_check --no-owner
           RESTORED_VERSION=$(docker exec "$PG_CONTAINER" psql -U ceh -d ceh_sklad_restore_check -Atc 'SELECT version_num FROM alembic_version')
           ACTIVE_COLUMN_COUNT=$(docker exec "$PG_CONTAINER" psql -U ceh -d ceh_sklad_restore_check -Atc "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='locations' AND column_name='is_active'")
-          test "$RESTORED_VERSION" = "20260903_07"
+          EXPORT_LINK_TABLE_COUNT=$(docker exec "$PG_CONTAINER" psql -U ceh -d ceh_sklad_restore_check -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='integration_export_links'")
+          test "$RESTORED_VERSION" = "20260903_08"
           test "$ACTIVE_COLUMN_COUNT" = "1"
+          test "$EXPORT_LINK_TABLE_COUNT" = "1"
           docker exec "$PG_CONTAINER" dropdb -U ceh ceh_sklad_restore_check
 
   admin-web:

@@ -1,5 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react'
 
+type Amount = number | string
+
 type Stock = {
   location_id: string
   location_name: string
@@ -7,19 +9,79 @@ type Stock = {
   sku: string
   product_name: string
   unit_name: string
-  quantity: number
-  retail_price: number
-  wholesale_price: number
+  quantity: Amount
+  retail_price: Amount
+  wholesale_price: Amount
 }
 
 type Location = { id: string; name: string; kind: 'warehouse' | 'representative'; external_1c_id?: string | null }
-type Product = { id: string; sku: string; name: string; unit_name: string; retail_price: number; wholesale_price: number }
+type Product = { id: string; sku: string; name: string; unit_name: string; retail_price: Amount; wholesale_price: Amount }
 type User = { id: string; name: string; login: string; role: 'representative' | 'admin' | 'manager'; location_id?: string | null }
-type Debt = { representative_location_id: string; representative_name: string; debt: number }
+type Debt = { representative_location_id: string; representative_name: string; debt: Amount }
+type StockOperationLine = { product_id: string; sku: string; product_name: string; unit_name: string; quantity: Amount; unit_price?: Amount | null }
+type StockOperation = {
+  id: string
+  kind: string
+  source_location_name?: string | null
+  destination_location_name?: string | null
+  created_by_name?: string | null
+  comment?: string | null
+  created_at: string
+  external_1c_id?: string | null
+  synced_1c_at?: string | null
+  lines: StockOperationLine[]
+}
+type MoneyOperation = {
+  id: string
+  representative_name: string
+  kind: string
+  amount: Amount
+  created_by_name?: string | null
+  comment?: string | null
+  created_at: string
+  external_1c_id?: string | null
+  synced_1c_at?: string | null
+}
+type RepresentativeReport = {
+  representative_location_id: string
+  representative_name: string
+  sales_count: number
+  sales_amount: Amount
+  cash_handover_amount: Amount
+  current_debt: Amount
+}
+type IntegrationLog = {
+  id: string
+  direction: string
+  operation_key: string
+  entity_type: string
+  external_1c_id?: string | null
+  status: string
+  error_message?: string | null
+  created_at: string
+}
 
 type ApiError = { detail?: string }
 
 const API = 'http://localhost:8000/api/v1'
+
+const stockKindLabel: Record<string, string> = {
+  transfer: 'Перемещение',
+  issue_to_representative: 'Выдача представителю',
+  representative_return: 'Возврат от представителя',
+  sale: 'Продажа',
+  adjustment: 'Корректировка',
+}
+
+const moneyKindLabel: Record<string, string> = {
+  sale: 'Продажа',
+  cash_handover: 'Сдача денег',
+  adjustment: 'Корректировка',
+}
+
+function formatDate(value: string) {
+  return new Date(value).toLocaleString('ru-RU')
+}
 
 export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem('ceh-token') ?? '')
@@ -31,6 +93,10 @@ export default function App() {
   const [products, setProducts] = useState<Product[]>([])
   const [users, setUsers] = useState<User[]>([])
   const [debts, setDebts] = useState<Debt[]>([])
+  const [stockOperations, setStockOperations] = useState<StockOperation[]>([])
+  const [moneyOperations, setMoneyOperations] = useState<MoneyOperation[]>([])
+  const [report, setReport] = useState<RepresentativeReport[]>([])
+  const [integrationLogs, setIntegrationLogs] = useState<IntegrationLog[]>([])
   const [query, setQuery] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -84,6 +150,10 @@ export default function App() {
     setProducts([])
     setUsers([])
     setDebts([])
+    setStockOperations([])
+    setMoneyOperations([])
+    setReport([])
+    setIntegrationLogs([])
   }
 
   async function load(currentToken = token) {
@@ -102,8 +172,26 @@ export default function App() {
       setProducts(productRows)
       if (me.role === 'admin') setUsers(await api<User[]>('/admin/users', {}, currentToken))
       else setUsers([])
-      if (me.role === 'admin' || me.role === 'manager') setDebts(await api<Debt[]>('/representatives/debts/all', {}, currentToken))
-      else setDebts([])
+      if (me.role === 'admin' || me.role === 'manager') {
+        const [debtRows, stockHistory, moneyHistory, reportRows, syncRows] = await Promise.all([
+          api<Debt[]>('/representatives/debts/all', {}, currentToken),
+          api<StockOperation[]>('/operations/stock?limit=100', {}, currentToken),
+          api<MoneyOperation[]>('/operations/money?limit=100', {}, currentToken),
+          api<RepresentativeReport[]>('/reports/representatives', {}, currentToken),
+          api<IntegrationLog[]>('/admin/integration-1c/logs?limit=50', {}, currentToken),
+        ])
+        setDebts(debtRows)
+        setStockOperations(stockHistory)
+        setMoneyOperations(moneyHistory)
+        setReport(reportRows)
+        setIntegrationLogs(syncRows)
+      } else {
+        setDebts([])
+        setStockOperations([])
+        setMoneyOperations([])
+        setReport([])
+        setIntegrationLogs([])
+      }
     } catch (e) {
       setError(String(e).replace('Error: ', ''))
     }
@@ -191,8 +279,28 @@ export default function App() {
       </section>
 
       <section className="panel">
+        <h2>Финансовый отчет по представителям</h2>
+        <div className="table-wrap"><table><thead><tr><th>Представитель</th><th>Продаж</th><th>Сумма продаж</th><th>Сдано денег</th><th>Текущий долг</th></tr></thead><tbody>{report.map((item) => <tr key={item.representative_location_id}><td>{item.representative_name}</td><td>{item.sales_count}</td><td>{item.sales_amount}</td><td>{item.cash_handover_amount}</td><td>{item.current_debt}</td></tr>)}</tbody></table></div>
+      </section>
+
+      <section className="panel">
         <h2>Задолженность торговых представителей</h2>
         <div className="table-wrap"><table><thead><tr><th>Представитель</th><th>Задолженность</th></tr></thead><tbody>{debts.map((item) => <tr key={item.representative_location_id}><td>{item.representative_name}</td><td>{item.debt}</td></tr>)}</tbody></table></div>
+      </section>
+
+      <section className="panel">
+        <h2>Журнал товарных операций</h2>
+        <div className="table-wrap"><table><thead><tr><th>Дата</th><th>Операция</th><th>Направление</th><th>Товары</th><th>Пользователь</th><th>1С</th></tr></thead><tbody>{stockOperations.map((item) => <tr key={item.id}><td>{formatDate(item.created_at)}</td><td><b>{stockKindLabel[item.kind] ?? item.kind}</b><small>{item.comment}</small></td><td>{item.source_location_name ?? '—'} → {item.destination_location_name ?? '—'}</td><td>{item.lines.map((line) => <small key={line.product_id}>{line.product_name}: {line.quantity} {line.unit_name}{line.unit_price != null ? ` × ${line.unit_price}` : ''}</small>)}</td><td>{item.created_by_name ?? 'Система / 1С'}</td><td>{item.synced_1c_at ? `✓ ${item.external_1c_id ?? ''}` : 'Ожидает'}</td></tr>)}</tbody></table></div>
+      </section>
+
+      <section className="panel">
+        <h2>Журнал денежных операций</h2>
+        <div className="table-wrap"><table><thead><tr><th>Дата</th><th>Представитель</th><th>Операция</th><th>Сумма в регистре</th><th>Пользователь</th><th>1С</th></tr></thead><tbody>{moneyOperations.map((item) => <tr key={item.id}><td>{formatDate(item.created_at)}</td><td>{item.representative_name}</td><td><b>{moneyKindLabel[item.kind] ?? item.kind}</b><small>{item.comment}</small></td><td>{item.amount}</td><td>{item.created_by_name ?? 'Система'}</td><td>{item.kind === 'sale' ? 'В составе продажи' : item.synced_1c_at ? `✓ ${item.external_1c_id ?? ''}` : 'Ожидает'}</td></tr>)}</tbody></table></div>
+      </section>
+
+      <section className="panel">
+        <h2>Журнал обмена с 1С</h2>
+        <div className="table-wrap"><table><thead><tr><th>Дата</th><th>Направление</th><th>Объект</th><th>Ключ</th><th>Статус</th><th>Ошибка</th></tr></thead><tbody>{integrationLogs.map((item) => <tr key={item.id}><td>{formatDate(item.created_at)}</td><td>{item.direction === 'inbound' ? '1С → Склад' : 'Склад → 1С'}</td><td>{item.entity_type}<small>{item.external_1c_id}</small></td><td>{item.operation_key}</td><td>{item.status}</td><td>{item.error_message ?? '—'}</td></tr>)}</tbody></table></div>
       </section>
 
       {currentUser?.role === 'admin' && <AdminTools locations={locations} products={products} users={users} action={action} />}

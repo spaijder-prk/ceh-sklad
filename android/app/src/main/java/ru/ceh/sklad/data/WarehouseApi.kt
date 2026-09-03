@@ -30,4 +30,10 @@ interface WarehouseApi {
 
     @GET("api/v1/representatives/{locationId}/debt")
     suspend fun getDebt(@Path("locationId") locationId: String): DebtResponse
+
+    @GET("api/v1/operations/stock")
+    suspend fun getStockOperations(@Query("limit") limit: Int = 60): List<StockOperation>
+
+    @GET("api/v1/operations/money")
+    suspend fun getMoneyOperations(@Query("limit") limit: Int = 60): List<MoneyOperation>
 }

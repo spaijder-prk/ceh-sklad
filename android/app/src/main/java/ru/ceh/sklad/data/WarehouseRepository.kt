@@ -83,6 +83,11 @@ class WarehouseRepository(context: Context) {
         return CachedSnapshot(stocks, locations, debt, System.currentTimeMillis()).also { storage.saveSnapshot(it) }
     }
 
+    suspend fun loadHistory(limit: Int = 60): RepresentativeHistory = RepresentativeHistory(
+        stock = api.getStockOperations(limit),
+        money = api.getMoneyOperations(limit),
+    )
+
     suspend fun cachedSnapshot(): CachedSnapshot? = storage.cachedSnapshot()
     suspend fun pendingCount(): Int = activeUserId?.let { storage.pendingCount(it) } ?: 0
 
@@ -115,10 +120,28 @@ class WarehouseRepository(context: Context) {
             val result = send()
             storage.removePending(operationKey)
             SubmissionResult(true, result.message, operationKey)
-        } catch (error: IOException) {
+        } catch (_: IOException) {
             queueOperation(type, operationKey, payload)
         } catch (error: HttpException) {
-            if (error.code() >= 500) queueOperation(type, operationKey, payload) else throw error
+            if (error.code() >= 500) {
+                queueOperation(type, operationKey, payload)
+            } else {
+                throw OperationRejectedException(operationErrorMessage(error))
+            }
+        }
+    }
+
+    private fun operationErrorMessage(error: HttpException): String {
+        val detail = runCatching {
+            val raw = error.response()?.errorBody()?.string()
+            if (raw.isNullOrBlank()) null else gson.fromJson(raw, ApiError::class.java)?.detail
+        }.getOrNull()
+        return detail ?: when (error.code()) {
+            401 -> "Сессия истекла. Войдите снова."
+            403 -> "Недостаточно прав для этой операции."
+            409 -> "Операция конфликтует с текущим состоянием на сервере. Обновите данные."
+            422 -> "Проверьте введенные данные операции."
+            else -> "Сервер отклонил операцию: HTTP ${error.code()}"
         }
     }
 
@@ -171,13 +194,13 @@ class WarehouseRepository(context: Context) {
             } catch (error: HttpException) {
                 if (error.code() == 401) throw error
                 if (error.code() in setOf(403, 404, 409, 422)) {
-                    val message = "Сервер отклонил операцию ${row.operationKey.take(8)}…: HTTP ${error.code()}"
+                    val message = operationErrorMessage(error)
                     storage.markPendingError(row.operationKey, message)
                     conflicts[row.operationKey] = PendingConflict(row.operationKey, message)
                     continue
                 }
                 if (error.code() >= 500) break
-                val message = "Операция ${row.operationKey.take(8)}… требует проверки: HTTP ${error.code()}"
+                val message = operationErrorMessage(error)
                 storage.markPendingError(row.operationKey, message)
                 conflicts[row.operationKey] = PendingConflict(row.operationKey, message)
             }
@@ -193,12 +216,16 @@ class WarehouseRepository(context: Context) {
         return RealtimeSubscription(client, request, onRefreshNeeded)
     }
 
+    private data class ApiError(val detail: String?)
+
     private companion object {
         const val TYPE_SALE = "sale"
         const val TYPE_RETURN = "representative_return"
         const val TYPE_CASH = "cash_handover"
     }
 }
+
+class OperationRejectedException(message: String) : IllegalStateException(message)
 
 class RealtimeSubscription(
     private val client: OkHttpClient,

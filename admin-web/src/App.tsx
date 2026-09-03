@@ -87,6 +87,8 @@ export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem('ceh-token') ?? '')
   const [login, setLogin] = useState('')
   const [password, setPassword] = useState('')
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
   const [currentUser, setCurrentUser] = useState<User | null>(null)
   const [stocks, setStocks] = useState<Stock[]>([])
   const [locations, setLocations] = useState<Location[]>([])
@@ -209,6 +211,24 @@ export default function App() {
     }
   }
 
+  async function changeOwnPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setError('')
+    setNotice('')
+    try {
+      await api('/auth/change-password', {
+        method: 'POST',
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      })
+      setCurrentPassword('')
+      setNewPassword('')
+      signOut()
+      setError('Пароль изменен. Войдите повторно с новым паролем.')
+    } catch (e) {
+      setError(String(e).replace('Error: ', ''))
+    }
+  }
+
   useEffect(() => { if (token) void load(token) }, [token])
 
   useEffect(() => {
@@ -231,8 +251,8 @@ export default function App() {
         <form className="login-card" onSubmit={signIn}>
           <p className="eyebrow">Панель управления</p>
           <h1>Цех Склад</h1>
-          <label>Логин<input value={login} onChange={(e) => setLogin(e.target.value)} autoComplete="username" /></label>
-          <label>Пароль<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" /></label>
+          <label>Логин<input value={login} onChange={(e) => setLogin(e.target.value)} autoComplete="username" maxLength={100} /></label>
+          <label>Пароль<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" maxLength={128} /></label>
           {error && <p className="error">{error}</p>}
           <button type="submit">Войти</button>
         </form>
@@ -266,6 +286,19 @@ export default function App() {
         <article><span>Товарных позиций</span><strong>{totalPositions}</strong></article>
         <article><span>Складов</span><strong>{warehouseCount}</strong></article>
         <article><span>Представителей</span><strong>{representativeCount}</strong></article>
+      </section>
+
+      <section className="panel">
+        <h2>Безопасность учетной записи</h2>
+        <div className="forms-grid">
+          <form onSubmit={changeOwnPassword}>
+            <h3>Сменить пароль</h3>
+            <input type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} required maxLength={128} autoComplete="current-password" placeholder="Текущий пароль" />
+            <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required minLength={10} maxLength={128} autoComplete="new-password" placeholder="Новый пароль: минимум 10 символов" />
+            <small>Новый пароль должен содержать буквы и цифры. После смены потребуется повторный вход.</small>
+            <button>Сменить пароль</button>
+          </form>
+        </div>
       </section>
 
       <section className="panel">
@@ -340,6 +373,16 @@ function AdminTools({ locations, products, users, action }: { locations: Locatio
     event.currentTarget.reset()
   }
 
+  async function resetPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    const userId = String(form.get('user_id'))
+    await action(`/admin/users/${userId}/reset-password`, {
+      new_password: form.get('new_password'),
+    }, 'Пароль пользователя сброшен; старые сессии недействительны')
+    event.currentTarget.reset()
+  }
+
   async function adjust(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const form = new FormData(event.currentTarget)
@@ -366,7 +409,8 @@ function AdminTools({ locations, products, users, action }: { locations: Locatio
       <section className="panel"><h2>Администрирование справочников</h2><div className="forms-grid">
         <form onSubmit={createLocation}><h3>Новое место хранения</h3><input name="name" required placeholder="Название" /><select name="kind"><option value="warehouse">Склад</option><option value="representative">Торговый представитель</option></select><button>Создать</button></form>
         <form onSubmit={createProduct}><h3>Новый товар</h3><input name="sku" required placeholder="Артикул" /><input name="name" required placeholder="Название" /><input name="unit_name" defaultValue="шт" required placeholder="Единица" /><input name="retail_price" type="number" min="0" step="0.01" required placeholder="Розничная цена" /><input name="wholesale_price" type="number" min="0" step="0.01" required placeholder="Оптовая цена" /><button>Создать</button></form>
-        <form onSubmit={createUser}><h3>Новый пользователь</h3><input name="name" required placeholder="Имя" /><input name="login" required minLength={3} placeholder="Логин" /><input name="password" type="password" required minLength={8} placeholder="Пароль" /><select name="role"><option value="representative">Торговый представитель</option><option value="manager">Руководитель</option><option value="admin">Администратор</option></select><select name="location_id"><option value="">Виртуальный склад</option>{representatives.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select><button>Создать</button><small>Пользователей: {users.length}</small></form>
+        <form onSubmit={createUser}><h3>Новый пользователь</h3><input name="name" required placeholder="Имя" /><input name="login" required minLength={3} maxLength={100} placeholder="Логин" /><input name="password" type="password" required minLength={10} maxLength={128} autoComplete="new-password" placeholder="Пароль: минимум 10 символов" /><select name="role"><option value="representative">Торговый представитель</option><option value="manager">Руководитель</option><option value="admin">Администратор</option></select><select name="location_id"><option value="">Виртуальный склад</option>{representatives.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select><button>Создать</button><small>Пользователей: {users.length}</small></form>
+        <form onSubmit={resetPassword}><h3>Сброс пароля</h3><select name="user_id" required><option value="">Пользователь</option>{users.map((item) => <option value={item.id} key={item.id}>{item.name} ({item.login})</option>)}</select><input name="new_password" type="password" required minLength={10} maxLength={128} autoComplete="new-password" placeholder="Новый пароль" /><small>После сброса все старые сессии пользователя перестанут работать.</small><button>Сбросить пароль</button></form>
       </div></section>
 
       <section className="panel"><h2>Операции склада</h2><div className="forms-grid">

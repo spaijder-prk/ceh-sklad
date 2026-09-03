@@ -109,6 +109,16 @@ class WarehouseRepository(context: Context) {
         money = api.getMoneyOperations(limit),
     )
 
+    suspend fun changePassword(currentPassword: String, newPassword: String): String {
+        return try {
+            val result = api.changePassword(PasswordChangeRequest(currentPassword, newPassword))
+            logout()
+            result.message
+        } catch (error: HttpException) {
+            throw OperationRejectedException(operationErrorMessage(error))
+        }
+    }
+
     suspend fun cachedSnapshot(): CachedSnapshot? = storage.cachedSnapshot()
     suspend fun pendingCount(): Int = activeUserId?.let { storage.pendingCount(it) } ?: 0
 

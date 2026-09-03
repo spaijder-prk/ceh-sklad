@@ -6,6 +6,9 @@ import retrofit2.http.POST
 import retrofit2.http.Query
 
 interface WarehouseApi {
+    @POST("api/v1/auth/login")
+    suspend fun login(@Body request: LoginRequest): TokenResponse
+
     @GET("api/v1/stocks")
     suspend fun getStocks(@Query("location_id") locationId: String? = null): List<StockItem>
 

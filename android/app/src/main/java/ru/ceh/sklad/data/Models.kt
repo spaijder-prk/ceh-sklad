@@ -1,5 +1,15 @@
 package ru.ceh.sklad.data
 
+data class LoginRequest(
+    val login: String,
+    val password: String,
+)
+
+data class TokenResponse(
+    val access_token: String,
+    val token_type: String,
+)
+
 data class StockItem(
     val location_id: String,
     val location_name: String,

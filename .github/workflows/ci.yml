@@ -1,0 +1,40 @@
+name: Проверка проекта
+
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+
+jobs:
+  backend:
+    name: Проверка backend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+      - name: Установить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Установить зависимости
+        run: pip install -e './backend[dev]'
+      - name: Проверить синтаксис
+        run: python -m compileall backend/app
+
+  admin-web:
+    name: Сборка панели управления
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: admin-web
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+      - name: Установить Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Установить зависимости
+        run: npm install
+      - name: Собрать приложение
+        run: npm run build

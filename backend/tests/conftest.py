@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest_asyncio
 from sqlalchemy import text
 
-from app.database import SessionFactory
+from app.database import SessionFactory, engine
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -18,6 +18,9 @@ async def clean_database():
         )
         await session.commit()
     yield
+    # pytest-asyncio по умолчанию может создавать отдельный event loop для каждого теста.
+    # asyncpg-соединение нельзя переносить между loop, поэтому очищаем пул между тестами.
+    await engine.dispose()
 
 
 @pytest_asyncio.fixture

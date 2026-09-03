@@ -28,33 +28,29 @@ class WarehouseRepository {
         .build()
         .create(WarehouseApi::class.java)
 
-    suspend fun login(login: String, password: String) {
+    suspend fun login(login: String, password: String): UserInfo {
         token = api.login(LoginRequest(login, password)).access_token
+        return api.me()
     }
 
     fun logout() {
         token = null
     }
 
-    suspend fun loadStocks(locationId: String? = null): List<StockItem> = api.getStocks(locationId)
-
+    suspend fun loadStocks(): List<StockItem> = api.getStocks()
+    suspend fun loadLocations(): List<LocationItem> = api.getLocations()
+    suspend fun loadDebt(locationId: String): Double = api.getDebt(locationId).debt
     suspend fun createSale(request: SaleRequest): OperationResult = api.createSale(request)
-
+    suspend fun returnGoods(request: TransferRequest): OperationResult = api.returnGoods(request)
     suspend fun handoverCash(request: CashHandoverRequest): OperationResult = api.handoverCash(request)
 
     fun connectRealtime(onStockChanged: () -> Unit): WebSocket? {
         val currentToken = token ?: return null
-        val wsBase = BuildConfig.API_BASE_URL
-            .replace("https://", "wss://")
-            .replace("http://", "ws://")
-        val request = Request.Builder()
-            .url("${wsBase}api/v1/realtime?token=$currentToken")
-            .build()
+        val wsBase = BuildConfig.API_BASE_URL.replace("https://", "wss://").replace("http://", "ws://")
+        val request = Request.Builder().url("${wsBase}api/v1/realtime?token=$currentToken").build()
         return client.newWebSocket(request, object : WebSocketListener() {
             override fun onMessage(webSocket: WebSocket, text: String) {
-                if (text.contains("\"type\":\"stock_changed\"") || text.contains("\"type\": \"stock_changed\"")) {
-                    onStockChanged()
-                }
+                if (text.contains("stock_changed")) onStockChanged()
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {

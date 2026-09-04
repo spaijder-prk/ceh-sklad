@@ -75,6 +75,25 @@ def test_tenant_mapping_fails_before_write_if_resource_is_absent_from_metadata()
         mapping.validate_against_metadata(entity_sets)
 
 
+def test_tenant_mapping_fails_if_external_key_field_is_absent_from_metadata():
+    mapping = TenantMapping.from_dict(VALID)
+    entity_sets = []
+    for alias, name in VALID["resources"].items():
+        properties = ("Ref_Key", "Комментарий") if alias in VALID["external_key_fields"] else ("Ref_Key",)
+        if alias == "sale":
+            properties = ("Ref_Key", "Description")
+        entity_sets.append(
+            ODataEntitySet(
+                name=name,
+                entity_type=f"StandardODATA.{name}",
+                properties=properties,
+            )
+        )
+
+    with pytest.raises(ValueError, match=r"sale: Document_РасходнаяНакладная\.Комментарий"):
+        mapping.validate_against_metadata(entity_sets)
+
+
 def test_tenant_mapping_requires_https():
     payload = {**VALID, "application_url": "http://1cfresh.example/a/unf/100"}
     with pytest.raises(ValueError, match="HTTPS"):

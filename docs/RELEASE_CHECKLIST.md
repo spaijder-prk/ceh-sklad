@@ -32,7 +32,7 @@
 - [ ] руководитель/администратор проверил самостоятельную смену пароля в web-панели;
 - [ ] торговый представитель проверил самостоятельную смену пароля в Android;
 - [ ] после смены/сброса пароля старый Bearer JWT больше не проходит REST, а новое WSS-подключение со старым токеном отклоняется;
-- [ ] rate limit входа проверен: 429 показывает корректный `Retry-After`, web не маскирует блокировку под неверный пароль.
+- [ ] rate limit входа проверен: 429 показывает корректный `Retry-After`, web/Android не маскируют блокировку под неверный пароль.
 
 ## Android
 
@@ -68,12 +68,17 @@
 
 - [ ] подтверждены провайдер, URL приложения, версия УНФ и часовой пояс базы;
 - [ ] сервисный пользователь имеет только согласованные минимальные права;
-- [ ] `ceh-unf-fresh-probe --details` выполнен на фактическом tenant;
-- [ ] non-secret tenant mapping заполнен только по реальному `$metadata`;
+- [ ] `ceh-unf-fresh-probe --details --all --snapshot ...` выполнен на фактическом tenant;
+- [ ] metadata snapshot сохранен как внутренний UAT artifact; его `snapshot_sha256` зафиксирован: `________________`;
+- [ ] non-secret tenant mapping заполнен только по реальному `$metadata`/snapshot;
+- [ ] `ceh-unf-metadata-validate` возвращает `ready` для exact snapshot+mapping;
+- [ ] `mapping_sha256` из offline-validator зафиксирован: `________________`;
+- [ ] exact mapping с этим SHA-256 сохранен в release record без credentials;
 - [ ] `ceh-unf-tenant-audit` возвращает `ready`;
-- [ ] `ceh-unf-fresh-health` возвращает `ready` и подтверждает backend readiness, `$metadata`, поля импорта, known Ref_Key и build payload;
+- [ ] `ceh-unf-fresh-health` возвращает `ready` и подтверждает backend readiness, текущий `$metadata`, поля импорта, reference checks и build payload;
 - [ ] выбраны разные реальные виды цен: розничный и оптовый;
 - [ ] согласованы организация, центральный склад, allow-list складов представителей, касса, статья ДДС, покупатели и payer mappings;
+- [ ] `reference_checks` настроены для кассы, статьи ДДС, реально используемых payer и других обязательных tenant-specific объектов;
 - [ ] импорт номенклатуры и двух видов цен выполнен и повтор того же содержимого идемпотентен;
 - [ ] импортированы только явно разрешенные склады;
 - [ ] выдача/перемещение/возврат создают ожидаемые `Перемещение запасов`;
@@ -95,5 +100,5 @@
 - [ ] выполнен отдельный restore test из актуального production-compatible backup;
 - [ ] определена процедура отката backend/web и восстановления БД;
 - [ ] зафиксирована процедура доставки следующего Android-релиза и сохранен signer certificate fingerprint;
-- [ ] ссылки на CI, staging preflight, Android release/smoke artifacts и UAT-протокол собраны в одном release record;
+- [ ] ссылки на CI, staging preflight, Android release/smoke artifacts, metadata snapshot/mapping SHA-256 и UAT-протокол собраны в одном release record;
 - [ ] PR переведен из draft только после завершения всех обязательных пунктов выше.

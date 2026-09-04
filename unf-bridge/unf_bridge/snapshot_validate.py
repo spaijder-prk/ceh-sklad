@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -9,6 +10,14 @@ from typing import Any
 from .fresh_probe import SNAPSHOT_SCHEMA_VERSION, load_metadata_snapshot
 from .odata import ODataEntitySet
 from .tenant_config import TenantMapping
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def validate_mapping_against_snapshot(
@@ -43,10 +52,20 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    mapping_sha256: str | None = None
+    snapshot_sha256: str | None = None
     try:
+        mapping_sha256 = sha256_file(args.mapping)
+        snapshot_sha256 = sha256_file(args.snapshot)
         mapping = TenantMapping.load(args.mapping)
         snapshot_url, entity_sets = load_metadata_snapshot(args.snapshot)
         report = validate_mapping_against_snapshot(mapping, snapshot_url, entity_sets)
+        report.update(
+            {
+                "mapping_sha256": mapping_sha256,
+                "snapshot_sha256": snapshot_sha256,
+            }
+        )
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         print(
             json.dumps(
@@ -54,6 +73,8 @@ def main() -> None:
                     "status": "blocked",
                     "error": str(exc),
                     "snapshot_schema": SNAPSHOT_SCHEMA_VERSION,
+                    "mapping_sha256": mapping_sha256,
+                    "snapshot_sha256": snapshot_sha256,
                 },
                 ensure_ascii=False,
                 sort_keys=True,

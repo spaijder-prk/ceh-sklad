@@ -1,7 +1,7 @@
 import pytest
 
 from unf_bridge.odata import ODataEntitySet
-from unf_bridge.snapshot_validate import validate_mapping_against_snapshot
+from unf_bridge.snapshot_validate import sha256_file, validate_mapping_against_snapshot
 from unf_bridge.tenant_config import TenantMapping
 
 
@@ -102,3 +102,12 @@ def test_offline_validation_rejects_missing_reference_check_resource():
     sets = [item for item in metadata_sets() if item.name != "Catalog_Кассы"]
     with pytest.raises(ValueError, match="Catalog_Кассы"):
         validate_mapping_against_snapshot(mapping, URL, sets)
+
+
+def test_sha256_file_is_stable_for_release_evidence(tmp_path):
+    target = tmp_path / "evidence.json"
+    target.write_bytes(b"abc")
+    assert sha256_file(target) == (
+        "ba7816bf8f01cfea414140de5dae2223"
+        "b00361a396177a9cb410ff61f20015ad"
+    )

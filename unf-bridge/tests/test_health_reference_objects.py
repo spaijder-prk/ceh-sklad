@@ -5,6 +5,9 @@ from unf_bridge.tenant_audit import TenantAuditReport
 from unf_bridge.tenant_config import TenantMapping
 
 
+CASHBOX_RESOURCE = "Catalog_Кассы"
+CASHBOX_REF = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
 BASE = {
     "provider": "1cfresh",
     "application_url": "https://1cfresh.example/a/unf/100",
@@ -42,6 +45,13 @@ BASE = {
         "retail_customer_ref": "dddddddd-dddd-dddd-dddd-dddddddddddd",
         "wholesale_customer_ref": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
     },
+    "reference_checks": [
+        {
+            "name": "cashbox",
+            "resource": CASHBOX_RESOURCE,
+            "ref_key": CASHBOX_REF,
+        }
+    ],
 }
 
 
@@ -74,6 +84,13 @@ class FakeFresh:
             else:
                 props = ()
             result.append(ODataEntitySet(name=name, entity_type=f"StandardODATA.{name}", properties=props))
+        result.append(
+            ODataEntitySet(
+                name=CASHBOX_RESOURCE,
+                entity_type=f"StandardODATA.{CASHBOX_RESOURCE}",
+                properties=("Ref_Key",),
+            )
+        )
         return result
 
     def find_one_by_guid(self, resource, ref_key):
@@ -96,7 +113,7 @@ def audit_ready():
     )
 
 
-def test_health_validates_known_reference_constants_read_only():
+def test_health_validates_known_and_generic_reference_objects_read_only():
     fresh = FakeFresh()
     health = check_health(
         FakeCeh(),  # type: ignore[arg-type]
@@ -107,7 +124,8 @@ def test_health_validates_known_reference_constants_read_only():
     )
     assert health.reference_objects_ready is True
     assert health.reference_validation_errors == ()
-    assert len(fresh.queries) == 5
+    assert len(fresh.queries) == 6
+    assert (CASHBOX_RESOURCE, CASHBOX_REF) in fresh.queries
 
 
 def test_health_degraded_when_configured_customer_ref_does_not_exist():
@@ -124,3 +142,18 @@ def test_health_degraded_when_configured_customer_ref_does_not_exist():
     assert len(health.reference_validation_errors) == 1
     assert "wholesale_customer_ref" in health.reference_validation_errors[0]
     assert missing in health.reference_validation_errors[0]
+
+
+def test_health_degraded_when_generic_reference_check_does_not_exist():
+    health = check_health(
+        FakeCeh(),  # type: ignore[arg-type]
+        FakeFresh(CASHBOX_REF),  # type: ignore[arg-type]
+        TenantMapping.from_dict(BASE),
+        mapping_audit=audit_ready(),
+        validate_reference_objects=True,
+    )
+    assert health.status == "degraded"
+    assert health.reference_objects_ready is False
+    assert health.reference_validation_errors == (
+        f"reference_checks.cashbox: Ref_Key {CASHBOX_REF} не найден в {CASHBOX_RESOURCE}",
+    )

@@ -95,3 +95,51 @@ def test_tenant_mapping_detects_wrong_price_field_missing_resource_and_wrong_gui
 def test_tenant_mapping_requires_https():
     payload = {**VALID, "application_url": "http://1cfresh.example/a/unf/100"}
     with pytest.raises(ValueError, match="HTTPS"): TenantMapping.from_dict(payload)
+
+
+def test_tenant_mapping_validates_generic_reference_checks_against_metadata():
+    payload = {
+        **VALID,
+        "reference_checks": [
+            {
+                "name": "cashbox",
+                "resource": "Catalog_Кассы",
+                "ref_key": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            }
+        ],
+    }
+    mapping = TenantMapping.from_dict(payload)
+    sets = metadata_sets() + [
+        ODataEntitySet(
+            name="Catalog_Кассы",
+            entity_type="StandardODATA.Catalog_Кассы",
+            properties=("Ref_Key", "Description"),
+        )
+    ]
+    mapping.validate_against_metadata(sets)
+    assert mapping.reference_checks[0].name == "cashbox"
+    assert mapping.public_summary()["reference_checks"] == ["cashbox"]
+
+    with pytest.raises(ValueError, match="Catalog_Кассы"):
+        mapping.validate_against_metadata(metadata_sets())
+
+
+def test_tenant_mapping_rejects_invalid_or_duplicate_generic_reference_checks():
+    payload = {
+        **VALID,
+        "reference_checks": [
+            {"name": "cashbox", "resource": "Catalog_Кассы", "ref_key": "not-a-guid"}
+        ],
+    }
+    with pytest.raises(ValueError, match="ref_key"):
+        TenantMapping.from_dict(payload)
+
+    payload = {
+        **VALID,
+        "reference_checks": [
+            {"name": "cashbox", "resource": "Catalog_Кассы", "ref_key": "cccccccc-cccc-cccc-cccc-cccccccccccc"},
+            {"name": "cashbox", "resource": "Catalog_ДругиеКассы", "ref_key": "dddddddd-dddd-dddd-dddd-dddddddddddd"},
+        ],
+    }
+    with pytest.raises(ValueError, match="Дублируется"):
+        TenantMapping.from_dict(payload)

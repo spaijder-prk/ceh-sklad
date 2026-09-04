@@ -117,6 +117,12 @@ def check_health(
                     f"constants.{constant_name}: Ref_Key {ref_key} не найден в {resource}"
                 )
 
+        for check in mapping.reference_checks:
+            if fresh_client.find_one_by_guid(check.resource, check.ref_key) is None:
+                reference_errors.append(
+                    f"reference_checks.{check.name}: Ref_Key {check.ref_key} не найден в {check.resource}"
+                )
+
     items: list[UnfOutboxItem] = ceh_client.outbox(max(1, min(limit, 100)))
     payload_factory = UnfOperationPayloadFactory(mapping) if mapping_audit is not None and audit_ready else None
 

@@ -64,6 +64,25 @@ def _validate_semantic_name(value: str) -> str:
 
 
 @dataclass(frozen=True)
+class ReferenceCheck:
+    name: str
+    resource: str
+    ref_key: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ReferenceCheck":
+        name = _validate_semantic_name(str(data.get("name", "")).strip())
+        resource = _validate_direct_field(
+            str(data.get("resource", "")).strip(),
+            description=f"EntitySet reference_checks.{name}",
+        )
+        ref_key = str(data.get("ref_key", "")).strip()
+        if not _GUID_RE.fullmatch(ref_key):
+            raise ValueError(f"reference_checks.{name}.ref_key должен быть GUID из УНФ")
+        return cls(name=name, resource=resource, ref_key=ref_key)
+
+
+@dataclass(frozen=True)
 class DocumentTableMapping:
     property: str
     row_resource: str
@@ -129,6 +148,7 @@ class TenantMapping:
     constants: dict[str, str]
     payload_schemas: dict[str, DocumentPayloadMapping]
     representative_payer_refs: dict[str, str]
+    reference_checks: tuple[ReferenceCheck, ...] = ()
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TenantMapping":
@@ -194,6 +214,20 @@ class TenantMapping:
                     f"Плательщик представителя {representative_external_id} должен быть Ref_Key GUID из УНФ"
                 )
 
+        reference_checks_raw = data.get("reference_checks", [])
+        if not isinstance(reference_checks_raw, list):
+            raise ValueError("reference_checks должен быть JSON-массивом")
+        reference_checks: list[ReferenceCheck] = []
+        reference_names: set[str] = set()
+        for index, raw_check in enumerate(reference_checks_raw):
+            if not isinstance(raw_check, dict):
+                raise ValueError(f"reference_checks[{index}] должен быть JSON-объектом")
+            check = ReferenceCheck.from_dict(raw_check)
+            if check.name in reference_names:
+                raise ValueError(f"Дублируется reference_checks.{check.name}")
+            reference_names.add(check.name)
+            reference_checks.append(check)
+
         payload_schemas: dict[str, DocumentPayloadMapping] = {}
         for alias, raw_schema in dict(data.get("payload_schemas", {})).items():
             alias_name = _validate_semantic_name(str(alias).strip())
@@ -214,6 +248,7 @@ class TenantMapping:
             constants=constants,
             payload_schemas=payload_schemas,
             representative_payer_refs=representative_payer_refs,
+            reference_checks=tuple(reference_checks),
         )
 
     @classmethod
@@ -225,7 +260,8 @@ class TenantMapping:
 
     def validate_against_metadata(self, entity_sets: list[ODataEntitySet]) -> None:
         by_name = {item.name: item for item in entity_sets}
-        missing = sorted({resource for resource in self.resources.values() if resource not in by_name})
+        configured_resources = set(self.resources.values()) | {check.resource for check in self.reference_checks}
+        missing = sorted(resource for resource in configured_resources if resource not in by_name)
         if missing:
             raise ValueError(
                 "В $metadata tenant отсутствуют настроенные OData resources: " + ", ".join(missing)
@@ -315,5 +351,6 @@ class TenantMapping:
             "resources": dict(self.resources),
             "payload_schemas": sorted(self.payload_schemas),
             "representative_payer_mappings": len(self.representative_payer_refs),
+            "reference_checks": [check.name for check in self.reference_checks],
             "configured_constants": sorted(key for key, value in self.constants.items() if value),
         }

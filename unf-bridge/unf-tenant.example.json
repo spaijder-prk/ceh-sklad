@@ -60,6 +60,23 @@
   "representative_payer_refs": {
     "REPLACE_REPRESENTATIVE_WAREHOUSE_EXTERNAL_ID": "REPLACE_PAYER_GUID"
   },
+  "reference_checks": [
+    {
+      "name": "cashbox",
+      "resource": "REPLACE_CASHBOX_ENTITYSET_FROM_METADATA",
+      "ref_key": "REPLACE_CASHBOX_GUID"
+    },
+    {
+      "name": "cash_flow_item",
+      "resource": "REPLACE_CASH_FLOW_ITEM_ENTITYSET_FROM_METADATA",
+      "ref_key": "REPLACE_CASH_FLOW_ITEM_GUID"
+    },
+    {
+      "name": "representative_payer",
+      "resource": "REPLACE_PAYER_ENTITYSET_FROM_METADATA",
+      "ref_key": "REPLACE_PAYER_GUID"
+    }
+  ],
   "payload_schemas": {
     "transfer": {
       "header_fields": {

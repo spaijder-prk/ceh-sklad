@@ -16,6 +16,7 @@ class CehSkladClient:
         *,
         timeout: float = 20.0,
         allow_http: bool = False,
+        transport: httpx.BaseTransport | None = None,
     ) -> None:
         normalized = base_url.rstrip("/")
         parsed = urlparse(normalized)
@@ -27,6 +28,7 @@ class CehSkladClient:
             base_url=normalized,
             timeout=timeout,
             headers={"X-1C-Key": integration_key},
+            transport=transport,
         )
 
     def close(self) -> None:

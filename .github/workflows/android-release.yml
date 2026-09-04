@@ -35,7 +35,17 @@ jobs:
           KEY_ALIAS: ${{ secrets.CEH_ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.CEH_ANDROID_KEY_PASSWORD }}
         run: |
-          case "$API_BASE_URL" in https://*) ;; *) echo "api_base_url должен использовать HTTPS"; exit 2 ;; esac
+          python - "$API_BASE_URL" <<'PY'
+          import sys
+          from urllib.parse import urlparse
+
+          value = sys.argv[1].strip().rstrip('/')
+          parsed = urlparse(value)
+          if parsed.scheme != 'https' or not parsed.netloc or parsed.username or parsed.password:
+              raise SystemExit('api_base_url должен быть полноценным HTTPS origin без credentials')
+          if parsed.path not in {'', '/'} or parsed.query or parsed.fragment:
+              raise SystemExit('api_base_url не должен содержать path/query/fragment')
+          PY
           test -n "$KEYSTORE_BASE64" || { echo "Не задан CEH_ANDROID_KEYSTORE_BASE64"; exit 2; }
           test -n "$KEYSTORE_PASSWORD" || { echo "Не задан CEH_ANDROID_KEYSTORE_PASSWORD"; exit 2; }
           test -n "$KEY_ALIAS" || { echo "Не задан CEH_ANDROID_KEY_ALIAS"; exit 2; }
@@ -56,10 +66,27 @@ jobs:
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
           test -n "$APKSIGNER"
           "$APKSIGNER" verify --verbose android/app/build/outputs/apk/release/app-release.apk
-      - name: Сохранить подписанный APK
+      - name: Сформировать release manifest
+        env:
+          API_BASE_URL: ${{ inputs.api_base_url }}
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          test -n "$APKSIGNER"
+          python scripts/android_release_manifest.py \
+            --apk android/app/build/outputs/apk/release/app-release.apk \
+            --metadata android/app/build/outputs/apk/release/output-metadata.json \
+            --api-base-url "$API_BASE_URL" \
+            --apksigner "$APKSIGNER" \
+            --output "$RUNNER_TEMP/android-release-manifest.json"
+      - name: Сохранить подписанный APK и manifest
         uses: actions/upload-artifact@v4
         with:
           name: ceh-sklad-release-apk
-          path: android/app/build/outputs/apk/release/app-release.apk
+          path: |
+            android/app/build/outputs/apk/release/app-release.apk
+            ${{ runner.temp }}/android-release-manifest.json
           if-no-files-found: error
           retention-days: 14
+      - name: Удалить временный keystore
+        if: ${{ always() }}
+        run: rm -f "$RUNNER_TEMP/ceh-sklad-release.keystore"

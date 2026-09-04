@@ -12,6 +12,15 @@ METADATA = """<?xml version="1.0" encoding="utf-8"?>
 <edmx:Edmx xmlns:edmx="http://schemas.microsoft.com/ado/2007/06/edmx">
   <edmx:DataServices>
     <Schema xmlns="http://schemas.microsoft.com/ado/2009/11/edm" Namespace="StandardODATA">
+      <EntityType Name="Catalog_Номенклатура">
+        <Property Name="Ref_Key" Type="Edm.Guid" Nullable="false" />
+        <Property Name="Description" Type="Edm.String" />
+      </EntityType>
+      <EntityType Name="Document_РасходнаяНакладная">
+        <Property Name="Ref_Key" Type="Edm.Guid" Nullable="false" />
+        <Property Name="Комментарий" Type="Edm.String" />
+        <Property Name="Posted" Type="Edm.Boolean" />
+      </EntityType>
       <EntityContainer Name="Container">
         <EntitySet Name="Catalog_Номенклатура" EntityType="StandardODATA.Catalog_Номенклатура" />
         <EntitySet Name="Document_РасходнаяНакладная" EntityType="StandardODATA.Document_РасходнаяНакладная" />
@@ -27,7 +36,7 @@ def test_fresh_odata_rejects_non_https_by_default():
         FreshODataClient("http://example.invalid/a/unf/1", "service", "secret")
 
 
-def test_metadata_discovers_entity_sets_and_does_not_follow_redirects():
+def test_metadata_discovers_entity_sets_properties_and_does_not_follow_redirects():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path.endswith("/odata/standard.odata/$metadata")
         assert request.headers["authorization"].startswith("Basic ")
@@ -45,6 +54,10 @@ def test_metadata_discovers_entity_sets_and_does_not_follow_redirects():
         "Catalog_Номенклатура",
         "Document_РасходнаяНакладная",
     ]
+    by_name = {item.name: item for item in entity_sets}
+    assert by_name["Catalog_Номенклатура"].properties == ("Ref_Key", "Description")
+    assert "Комментарий" in by_name["Document_РасходнаяНакладная"].properties
+    assert "Posted" in by_name["Document_РасходнаяНакладная"].properties
 
 
 def test_list_create_and_post_document_use_standard_odata_contract():

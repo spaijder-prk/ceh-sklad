@@ -87,11 +87,24 @@ class TenantMapping:
         return cls.from_dict(raw)
 
     def validate_against_metadata(self, entity_sets: list[ODataEntitySet]) -> None:
-        available = {item.name for item in entity_sets}
-        missing = sorted({resource for resource in self.resources.values() if resource not in available})
+        by_name = {item.name: item for item in entity_sets}
+        missing = sorted({resource for resource in self.resources.values() if resource not in by_name})
         if missing:
             raise ValueError(
                 "В $metadata tenant отсутствуют настроенные OData resources: " + ", ".join(missing)
+            )
+
+        missing_fields: list[str] = []
+        for alias in DOCUMENT_RESOURCES:
+            resource = self.resources[alias]
+            field = self.external_key_fields[alias]
+            properties = by_name[resource].properties
+            if properties and field not in properties:
+                missing_fields.append(f"{alias}: {resource}.{field}")
+        if missing_fields:
+            raise ValueError(
+                "В $metadata tenant отсутствуют поля устойчивого внешнего ключа: "
+                + ", ".join(missing_fields)
             )
 
     def public_summary(self) -> dict[str, Any]:

@@ -50,3 +50,17 @@ def test_android_workflows_use_current_java_setup_action():
     for workflow in workflows:
         assert "actions/setup-java@v4" not in workflow
         assert "actions/setup-java@v5" in workflow
+
+
+def test_main_ci_runs_android_only_for_latest_android_change_in_pr():
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    assert "android-changes:" in workflow
+    assert "fetch-depth: 2" in workflow
+    assert "github.event.pull_request.head.sha || github.sha" in workflow
+    assert 'if [ "${{ github.event_name }}" = "push" ]; then' in workflow
+    assert "git diff --quiet HEAD^ HEAD -- android .github/workflows/ci.yml" in workflow
+    assert 'echo "run_android=false" >> "$GITHUB_OUTPUT"' in workflow
+    assert 'echo "run_android=true" >> "$GITHUB_OUTPUT"' in workflow
+    assert "needs: android-changes" in workflow
+    assert "if: needs.android-changes.outputs.run_android == 'true'" in workflow

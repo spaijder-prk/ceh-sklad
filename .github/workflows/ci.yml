@@ -5,7 +5,35 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
+  android-changes:
+    name: Определить необходимость Android build
+    runs-on: ubuntu-latest
+    outputs:
+      run_android: ${{ steps.diff.outputs.run_android }}
+    steps:
+      - name: Получить head commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 2
+      - name: Проверить Android-изменения
+        id: diff
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "run_android=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --quiet HEAD^ HEAD -- android .github/workflows/ci.yml; then
+            echo "run_android=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_android=true" >> "$GITHUB_OUTPUT"
+          fi
+
   backend:
     name: Проверка backend и интеграционные тесты
     runs-on: ubuntu-latest
@@ -107,6 +135,8 @@ jobs:
 
   android:
     name: Тесты и сборка Android
+    needs: android-changes
+    if: needs.android-changes.outputs.run_android == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Получить код

@@ -57,6 +57,17 @@ def audit_mapping_data(data: dict[str, Any]) -> TenantAuditReport:
     except ValueError as exc:
         errors.append(f"locations: {exc}")
 
+    if products is not None:
+        if products.deletion_policy == "ignore":
+            warnings.append(
+                "product_deletion_policy=ignore: DeletionMark УНФ не меняет активность товара; "
+                "для production политика должна быть явно принята в UAT record"
+            )
+        elif products.deletion_policy == "block":
+            warnings.append(
+                "product_deletion_policy=block: помеченный товар остановит импорт до ручного решения"
+            )
+
     if tenant is not None:
         missing_constants = [
             name for name in REQUIRED_OPERATION_CONSTANTS if not tenant.constants.get(name)

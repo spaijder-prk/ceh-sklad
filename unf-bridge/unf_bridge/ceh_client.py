@@ -79,7 +79,26 @@ class CehSkladClient:
             raise RuntimeError("ceh-sklad вернул неожиданный ответ archive-check товара")
         return dict(body)
 
+    def archive_product(self, external_1c_id: str, operation_key: str) -> dict[str, Any]:
+        encoded = quote(external_1c_id, safe="")
+        response = self._client.post(
+            f"/api/v1/integration/1c/products/{encoded}/archive",
+            json={"operation_key": operation_key},
+        )
+        response.raise_for_status()
+        body = response.json()
+        if not isinstance(body, dict):
+            raise RuntimeError("ceh-sklad вернул неожиданный ответ архивации товара")
+        return dict(body)
+
     def import_product(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("is_active") is False:
+            external_1c_id = str(payload.get("external_1c_id", "")).strip()
+            operation_key = str(payload.get("operation_key", "")).strip()
+            if not external_1c_id or not operation_key:
+                raise ValueError("Для атомарной архивации нужны external_1c_id и operation_key")
+            return self.archive_product(external_1c_id, operation_key)
+
         response = self._client.post("/api/v1/integration/1c/products", json=payload)
         response.raise_for_status()
         body = response.json()

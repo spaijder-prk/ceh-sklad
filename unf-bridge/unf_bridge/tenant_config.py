@@ -128,6 +128,7 @@ class TenantMapping:
     price_fields: dict[str, str]
     constants: dict[str, str]
     payload_schemas: dict[str, DocumentPayloadMapping]
+    representative_payer_refs: dict[str, str]
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TenantMapping":
@@ -141,6 +142,10 @@ class TenantMapping:
         }
         price_fields = {str(key): str(value).strip() for key, value in dict(data.get("price_fields", {})).items()}
         constants = {str(key): str(value).strip() for key, value in dict(data.get("constants", {})).items()}
+        representative_payer_refs = {
+            str(key).strip(): str(value).strip()
+            for key, value in dict(data.get("representative_payer_refs", {})).items()
+        }
 
         if provider not in {"1cfresh", "other"}:
             raise ValueError("provider должен быть 1cfresh или other")
@@ -181,6 +186,14 @@ class TenantMapping:
         if constants["retail_price_type_ref"].lower() == constants["wholesale_price_type_ref"].lower():
             raise ValueError("Розничный и оптовый виды цен УНФ должны быть разными")
 
+        for representative_external_id, payer_ref in representative_payer_refs.items():
+            if not representative_external_id:
+                raise ValueError("Пустой external_1c_id представителя в representative_payer_refs")
+            if not _GUID_RE.fullmatch(payer_ref):
+                raise ValueError(
+                    f"Плательщик представителя {representative_external_id} должен быть Ref_Key GUID из УНФ"
+                )
+
         payload_schemas: dict[str, DocumentPayloadMapping] = {}
         for alias, raw_schema in dict(data.get("payload_schemas", {})).items():
             alias_name = _validate_semantic_name(str(alias).strip())
@@ -200,6 +213,7 @@ class TenantMapping:
             price_fields=price_fields,
             constants=constants,
             payload_schemas=payload_schemas,
+            representative_payer_refs=representative_payer_refs,
         )
 
     @classmethod
@@ -300,5 +314,6 @@ class TenantMapping:
             "post_documents": self.post_documents,
             "resources": dict(self.resources),
             "payload_schemas": sorted(self.payload_schemas),
+            "representative_payer_mappings": len(self.representative_payer_refs),
             "configured_constants": sorted(key for key, value in self.constants.items() if value),
         }

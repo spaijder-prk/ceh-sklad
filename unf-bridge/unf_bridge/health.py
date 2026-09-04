@@ -10,6 +10,7 @@ from typing import Any
 
 from .catalog_import import ProductFieldMapping
 from .ceh_client import CehSkladClient
+from .evidence import metadata_structure_sha256, sha256_file
 from .location_import import LocationImportMapping
 from .models import UnfOutboxItem
 from .odata import FreshODataClient, ODataEntitySet
@@ -38,6 +39,8 @@ class BridgeHealth:
     contract_version: str
     target_configuration: str
     provider: str
+    mapping_sha256: str | None
+    metadata_structure_sha256: str
     published_entity_sets: int
     outbox_items: int
     ready_items: int
@@ -66,10 +69,15 @@ def check_health(
     location_mapping: LocationImportMapping | None = None,
     validate_reference_objects: bool = False,
     backend_readiness: dict[str, Any] | None = None,
+    mapping_sha256: str | None = None,
 ) -> BridgeHealth:
     """Read-only readiness check. Не создает и не подтверждает документы."""
     backend_checked = backend_readiness is not None
-    backend_database = str(backend_readiness.get("database")) if backend_readiness and backend_readiness.get("database") is not None else None
+    backend_database = (
+        str(backend_readiness.get("database"))
+        if backend_readiness and backend_readiness.get("database") is not None
+        else None
+    )
     backend_schema_revision = (
         str(backend_readiness.get("schema_revision"))
         if backend_readiness and backend_readiness.get("schema_revision") is not None
@@ -88,6 +96,7 @@ def check_health(
     profile = ceh_client.profile()
     entity_sets: list[ODataEntitySet] = fresh_client.entity_sets()
     mapping.validate_against_metadata(entity_sets)
+    metadata_digest = metadata_structure_sha256(mapping.application_url, entity_sets)
 
     catalog_errors: list[str] = []
     if product_mapping is not None:
@@ -124,7 +133,11 @@ def check_health(
                 )
 
     items: list[UnfOutboxItem] = ceh_client.outbox(max(1, min(limit, 100)))
-    payload_factory = UnfOperationPayloadFactory(mapping) if mapping_audit is not None and audit_ready else None
+    payload_factory = (
+        UnfOperationPayloadFactory(mapping)
+        if mapping_audit is not None and audit_ready
+        else None
+    )
 
     ready = 0
     blocked = 0
@@ -171,6 +184,8 @@ def check_health(
         contract_version=profile.contract_version,
         target_configuration=profile.target_configuration,
         provider=mapping.provider,
+        mapping_sha256=mapping_sha256,
+        metadata_structure_sha256=metadata_digest,
         published_entity_sets=len(entity_sets),
         outbox_items=len(items),
         ready_items=ready,
@@ -212,10 +227,15 @@ def main() -> None:
     if not fresh_login or not fresh_password:
         raise SystemExit("Задайте UNF_FRESH_LOGIN и UNF_FRESH_PASSWORD через secret storage")
 
+    mapping_digest = sha256_file(args.mapping)
     mapping = TenantMapping.load(args.mapping)
     mapping_audit = audit_mapping_file(args.mapping)
-    product_mapping = ProductFieldMapping.load(args.mapping) if mapping_audit.status == "ready" else None
-    location_mapping = LocationImportMapping.load(args.mapping) if mapping_audit.status == "ready" else None
+    product_mapping = (
+        ProductFieldMapping.load(args.mapping) if mapping_audit.status == "ready" else None
+    )
+    location_mapping = (
+        LocationImportMapping.load(args.mapping) if mapping_audit.status == "ready" else None
+    )
     with CehSkladClient(
         args.ceh_url,
         ceh_key,
@@ -236,6 +256,7 @@ def main() -> None:
             location_mapping=location_mapping,
             validate_reference_objects=True,
             backend_readiness=backend_readiness,
+            mapping_sha256=mapping_digest,
         )
 
     print(json.dumps(asdict(health), ensure_ascii=False, sort_keys=True))

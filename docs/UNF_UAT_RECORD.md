@@ -18,13 +18,15 @@
 
 - Metadata snapshot artifact: `________________`
 - `snapshot_sha256`: `________________`
+- `metadata_structure_sha256`: `________________`
 - Tenant mapping artifact: `________________`
 - `mapping_sha256`: `________________`
 - `ceh-unf-metadata-validate`: `ready / blocked`
 - `ceh-unf-tenant-audit`: `ready / blocked`
 - `ceh-unf-fresh-health`: `ready / degraded`
+- `metadata_structure_sha256` из live health совпадает с offline validation: `да / нет`
 
-Перед записью должны совпадать exact SHA-256 snapshot/mapping, зафиксированные в release record. После изменения mapping или повторного discovery hashes фиксируются заново.
+Перед записью должны совпадать exact SHA-256 snapshot/mapping, зафиксированные в release record. `metadata_structure_sha256` связывает принятую snapshot-структуру с live `$metadata` и не зависит от форматирования JSON. После изменения mapping или повторного discovery hashes фиксируются заново.
 
 ## 3. Справочники и reference checks
 

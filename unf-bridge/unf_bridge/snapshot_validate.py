@@ -1,23 +1,15 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 from pathlib import Path
 from typing import Any
 
+from .evidence import metadata_structure_sha256, sha256_file
 from .fresh_probe import SNAPSHOT_SCHEMA_VERSION, load_metadata_snapshot
 from .odata import ODataEntitySet
 from .tenant_config import TenantMapping
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def validate_mapping_against_snapshot(
@@ -38,6 +30,10 @@ def validate_mapping_against_snapshot(
         "configured_resources": len(set(mapping.resources.values())),
         "payload_schemas": len(mapping.payload_schemas),
         "reference_checks": len(mapping.reference_checks),
+        "metadata_structure_sha256": metadata_structure_sha256(
+            snapshot_application_url,
+            entity_sets,
+        ),
     }
 
 

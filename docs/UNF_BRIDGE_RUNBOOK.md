@@ -56,6 +56,12 @@ ceh-unf-metadata-validate \
 
 Команда не использует сеть или credentials. Она проверяет совпадение `application_url`, наличие всех EntitySet, полей устойчивых ключей, price paths, payload schemas/табличных частей и EntitySet из `reference_checks`. Успех возвращает JSON `status=ready`; ошибка — `status=blocked` и код `3`.
 
+Для release evidence JSON также содержит:
+
+- `mapping_sha256` — SHA-256 точных байтов tenant mapping;
+- `snapshot_sha256` — SHA-256 точных байтов сохраненного snapshot;
+- `metadata_structure_sha256` — SHA-256 канонической структуры EntitySet/полей/navigation. Этот digest не зависит от форматирования JSON и используется для сравнения принятого snapshot с live health.
+
 Отдельно выполните статический бизнес-аудит mapping:
 
 ```bash
@@ -118,6 +124,13 @@ ceh-unf-fresh-health --mapping /etc/ceh-sklad/unf-tenant.json --limit 100
 ```
 
 Успешный stdout — одна JSON-строка с `status`, версией контракта, количеством опубликованных EntitySet, ready/blocked outbox и числом планируемых документов. `status=degraded` означает наличие заблокированных outbox элементов или отсутствующих обязательных reference objects и завершает команду кодом 3.
+
+Bridge `0.8.5+` дополнительно выводит:
+
+- `mapping_sha256` — SHA-256 фактически прочитанного mapping-файла;
+- `metadata_structure_sha256` — канонический digest текущей live `$metadata`.
+
+Перед включением writer-а сравните `metadata_structure_sha256` из live health с одноименным значением успешного `ceh-unf-metadata-validate` для принятого snapshot. Несовпадение означает изменение опубликованной структуры tenant и требует повторного discovery/review до записи. В systemd journal эти поля дают проверяемый след конфигурации без публикации credentials.
 
 Коды процесса bridge:
 

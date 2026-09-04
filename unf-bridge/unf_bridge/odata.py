@@ -224,6 +224,20 @@ class FreshODataClient:
             raise RuntimeError("OData SliceLast вернул неожиданный формат")
         return [dict(row) for row in value]
 
+    def find_one_by_guid(self, resource: str, ref_key: str) -> dict[str, Any] | None:
+        """Безопасно проверяет существование объекта каталога по стандартному Ref_Key."""
+        resource = _validate_resource(resource)
+        guid = _validate_guid(ref_key)
+        rows = self.list(
+            resource,
+            top=2,
+            select=("Ref_Key",),
+            filter_expression=f"Ref_Key eq guid'{guid}'",
+        )
+        if len(rows) > 1:
+            raise RuntimeError(f"По Ref_Key {guid} найдено несколько объектов в {resource}")
+        return rows[0] if rows else None
+
     def find_one_by_text_field(
         self,
         resource: str,

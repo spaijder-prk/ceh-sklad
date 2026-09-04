@@ -18,6 +18,15 @@ from .tenant_audit import TenantAuditReport, audit_mapping_file
 from .tenant_config import TenantMapping
 
 
+REFERENCE_CONSTANT_RESOURCES = {
+    "retail_price_type_ref": "price_types",
+    "wholesale_price_type_ref": "price_types",
+    "organization_ref": "organizations",
+    "retail_customer_ref": "counterparties",
+    "wholesale_customer_ref": "counterparties",
+}
+
+
 @dataclass(frozen=True)
 class BridgeHealth:
     status: str
@@ -33,6 +42,8 @@ class BridgeHealth:
     payload_validation_errors: tuple[str, ...]
     catalog_mapping_ready: bool
     catalog_mapping_errors: tuple[str, ...]
+    reference_objects_ready: bool
+    reference_validation_errors: tuple[str, ...]
     post_documents: bool
     mapping_audit_ready: bool
     mapping_audit_errors: tuple[str, ...]
@@ -48,6 +59,7 @@ def check_health(
     mapping_audit: TenantAuditReport | None = None,
     product_mapping: ProductFieldMapping | None = None,
     location_mapping: LocationImportMapping | None = None,
+    validate_reference_objects: bool = False,
 ) -> BridgeHealth:
     """Read-only readiness check. Не создает и не подтверждает документы."""
     profile = ceh_client.profile()
@@ -66,11 +78,23 @@ def check_health(
         except ValueError as exc:
             catalog_errors.append(f"locations: {exc}")
 
-    items: list[UnfOutboxItem] = ceh_client.outbox(max(1, min(limit, 100)))
-
     audit_ready = mapping_audit is None or mapping_audit.status == "ready"
     audit_errors = mapping_audit.errors if mapping_audit is not None else ()
     audit_warnings = mapping_audit.warnings if mapping_audit is not None else ()
+
+    reference_errors: list[str] = []
+    if validate_reference_objects and audit_ready:
+        for constant_name, resource_alias in REFERENCE_CONSTANT_RESOURCES.items():
+            ref_key = mapping.constants.get(constant_name)
+            if not ref_key:
+                continue
+            resource = mapping.resources[resource_alias]
+            if fresh_client.find_one_by_guid(resource, ref_key) is None:
+                reference_errors.append(
+                    f"constants.{constant_name}: Ref_Key {ref_key} не найден в {resource}"
+                )
+
+    items: list[UnfOutboxItem] = ceh_client.outbox(max(1, min(limit, 100)))
     payload_factory = UnfOperationPayloadFactory(mapping) if mapping_audit is not None and audit_ready else None
 
     ready = 0
@@ -100,7 +124,14 @@ def check_health(
             blocked += 1
 
     catalog_ready = not catalog_errors
-    is_ready = blocked == 0 and audit_ready and not payload_errors and catalog_ready
+    references_ready = not reference_errors
+    is_ready = (
+        blocked == 0
+        and audit_ready
+        and not payload_errors
+        and catalog_ready
+        and references_ready
+    )
     return BridgeHealth(
         status="ready" if is_ready else "degraded",
         contract_version=profile.contract_version,
@@ -115,6 +146,8 @@ def check_health(
         payload_validation_errors=tuple(payload_errors),
         catalog_mapping_ready=catalog_ready,
         catalog_mapping_errors=tuple(catalog_errors),
+        reference_objects_ready=references_ready,
+        reference_validation_errors=tuple(reference_errors),
         post_documents=mapping.post_documents,
         mapping_audit_ready=audit_ready,
         mapping_audit_errors=audit_errors,
@@ -166,6 +199,7 @@ def main() -> None:
             mapping_audit=mapping_audit,
             product_mapping=product_mapping,
             location_mapping=location_mapping,
+            validate_reference_objects=True,
         )
 
     print(json.dumps(asdict(health), ensure_ascii=False, sort_keys=True))

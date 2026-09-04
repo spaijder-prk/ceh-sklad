@@ -1,0 +1,35 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ceh_sklad
+      POSTGRES_USER: ceh
+      POSTGRES_PASSWORD: ceh
+    ports:
+      - "5432:5432"
+    volumes:
+      - ceh_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ceh -d ceh_sklad"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+      - ./backend:/app
+    environment:
+      CEH_DATABASE_URL: postgresql+psycopg://ceh:ceh@db:5432/ceh_sklad
+      CEH_AUTO_CREATE_SCHEMA: "true"
+    command: >
+      sh -c "pip install -e . && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  ceh_postgres_data:

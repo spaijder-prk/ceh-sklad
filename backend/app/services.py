@@ -22,6 +22,38 @@ from .models import (
 from .schemas import AdjustmentItemIn, MovementItemIn, PriceType
 
 
+async def lock_active_products(
+    session: AsyncSession,
+    product_ids: list[UUID],
+) -> dict[UUID, Product]:
+    """Сериализует движения и архивацию одного товара через Product row lock."""
+    ordered_ids = sorted(set(product_ids), key=str)
+    if not ordered_ids:
+        return {}
+    rows = list(
+        await session.scalars(
+            select(Product)
+            .where(Product.id.in_(ordered_ids))
+            .order_by(Product.id)
+            .with_for_update()
+        )
+    )
+    by_id = {row.id: row for row in rows}
+    missing = [product_id for product_id in ordered_ids if product_id not in by_id]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Товар не найден: {missing[0]}",
+        )
+    archived = [row for row in rows if not row.is_active]
+    if archived:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Товар архивирован: {archived[0].sku}",
+        )
+    return by_id
+
+
 async def _ensure_balance_row(session: AsyncSession, location_id: UUID, product_id: UUID) -> None:
     """Атомарно создает нулевой остаток, если строки еще нет."""
     await session.execute(
@@ -171,6 +203,7 @@ async def create_transfer(
         return existing
 
     items = _aggregate_movement_items(items)
+    await lock_active_products(session, [item.product_id for item in items])
     document = StockDocument(
         kind=kind,
         source_location_id=source_location_id,
@@ -218,6 +251,7 @@ async def create_adjustment(
     if not items:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Корректировка не содержит изменений")
 
+    await lock_active_products(session, [item.product_id for item in items])
     document = StockDocument(
         kind=StockDocumentKind.ADJUSTMENT,
         created_by_id=created_by_id,
@@ -263,6 +297,7 @@ async def create_sale(
         return existing
 
     items = _aggregate_movement_items(items)
+    products = await lock_active_products(session, [item.product_id for item in items])
     document = StockDocument(
         kind=StockDocumentKind.SALE,
         source_location_id=representative_location_id,
@@ -282,9 +317,7 @@ async def create_sale(
         balance = await _locked_balance(session, representative_location_id, item.product_id)
         if balance.quantity < item.quantity:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Недостаточный остаток товара {item.product_id} у представителя")
-        product = await session.get(Product, item.product_id)
-        if product is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден")
+        product = products[item.product_id]
         unit_price = product.retail_price if price_type == PriceType.RETAIL else product.wholesale_price
         balance.quantity -= item.quantity
         total += item.quantity * unit_price

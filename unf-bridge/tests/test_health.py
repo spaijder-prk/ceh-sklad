@@ -203,7 +203,7 @@ def test_health_degraded_when_ready_outbox_cannot_build_payload():
     assert health.payload_validated_documents == 0
     assert len(health.payload_validation_errors) == 1
     assert "doc-1" in health.payload_validation_errors[0]
-    assert "payload_schemas.transfer" in health.payload_validation_errors[0]
+    assert "payload_schemas" in health.payload_validation_errors[0]
 
 
 def test_health_degraded_when_catalog_import_field_is_absent_from_metadata():

@@ -46,10 +46,31 @@
 export UNF_FRESH_URL='https://1cfresh.com/a/.../...'
 export UNF_FRESH_LOGIN='service-user'
 export UNF_FRESH_PASSWORD='***'
-ceh-unf-fresh-probe
+ceh-unf-fresh-probe --details --all
 ```
 
-После первичного discovery заполните `unf-bridge/unf-tenant.example.json`, сохраните отдельной несекретной конфигурацией и повторите:
+### Санитизированный metadata snapshot
+
+Bridge `0.8.2` умеет сохранить полный структурированный snapshot discovery без учетных данных:
+
+```bash
+ceh-unf-fresh-probe \
+  --details \
+  --all \
+  --snapshot /var/lib/ceh-unf/unf-metadata.json
+```
+
+Snapshot содержит:
+
+- URL приложения и OData base;
+- полный список EntitySet;
+- EDM-типы полей и `nullable`;
+- `NavigationProperty`;
+- связанные EntitySet, которые могут быть табличными частями.
+
+В snapshot **не записываются** логин, пароль или `Authorization` headers. При этом файл раскрывает структуру и URL конкретного tenant, поэтому фактический production snapshot не следует коммитить в публичный репозиторий. Его можно хранить как внутренний UAT/discovery artifact и использовать для ревью mapping без повторного доступа к 1С.
+
+После discovery заполните `unf-bridge/unf-tenant.example.json`, сохраните отдельной несекретной конфигурацией и повторите:
 
 ```bash
 ceh-unf-fresh-probe --mapping /path/to/unf-tenant.json
@@ -76,7 +97,7 @@ ceh-unf-fresh-probe --mapping /path/to/unf-tenant.json
 
 ## Read-only проверки произвольных справочников
 
-Bridge `0.8.1` поддерживает `reference_checks` в tenant mapping. Это позволяет после получения реального `$metadata` проверять существование кассы, статьи ДДС, плательщика и других tenant-specific объектов **без изменения Python-кода**.
+Bridge `0.8.1+` поддерживает `reference_checks` в tenant mapping. Это позволяет после получения реального `$metadata` проверять существование кассы, статьи ДДС, плательщика и других tenant-specific объектов **без изменения Python-кода**.
 
 Пример:
 

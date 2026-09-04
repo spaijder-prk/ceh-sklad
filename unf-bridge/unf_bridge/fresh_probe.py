@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
+from typing import Any
 
 from .odata import FreshODataClient, ODataEntitySet
 from .tenant_config import TenantMapping
@@ -21,6 +23,8 @@ DEFAULT_HINTS = (
     "Организац",
     "Контрагент",
 )
+
+SNAPSHOT_SCHEMA_VERSION = "ceh-unf-metadata-v1"
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,6 +52,11 @@ def parse_args() -> argparse.Namespace:
         "--details",
         action="store_true",
         help="Показать поля, EDM-типы, nullable и связанные EntitySet/табличные части",
+    )
+    parser.add_argument(
+        "--snapshot",
+        type=Path,
+        help="Сохранить полный санитизированный JSON snapshot $metadata без credentials",
     )
     parser.add_argument(
         "--allow-http",
@@ -88,6 +97,60 @@ def entity_details_lines(item: ODataEntitySet, entity_sets: list[ODataEntitySet]
     return lines
 
 
+def metadata_snapshot(application_url: str, entity_sets: list[ODataEntitySet]) -> dict[str, Any]:
+    """Возвращает переносимый read-only snapshot структуры OData без учетных данных."""
+    normalized_url = application_url.rstrip("/")
+    return {
+        "schema_version": SNAPSHOT_SCHEMA_VERSION,
+        "application_url": normalized_url,
+        "odata_base": f"{normalized_url}/odata/standard.odata",
+        "entity_set_count": len(entity_sets),
+        "entity_sets": [
+            {
+                "name": item.name,
+                "entity_type": item.entity_type,
+                "fields": [
+                    {
+                        "name": field.name,
+                        "edm_type": field.edm_type,
+                        "nullable": field.nullable,
+                    }
+                    for field in item.fields
+                ],
+                "navigation": [
+                    {
+                        "name": navigation.name,
+                        "target_type": navigation.target_type,
+                    }
+                    for navigation in item.navigation
+                ],
+                "related_entity_sets": [
+                    candidate.name for candidate in related_entity_sets(item, entity_sets)
+                ],
+            }
+            for item in entity_sets
+        ],
+    }
+
+
+def write_metadata_snapshot(
+    path: Path,
+    application_url: str,
+    entity_sets: list[ODataEntitySet],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            metadata_snapshot(application_url, entity_sets),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def main() -> None:
     args = parse_args()
     username = os.getenv("UNF_FRESH_LOGIN")
@@ -112,6 +175,11 @@ def main() -> None:
     if mapping:
         mapping.validate_against_metadata(entity_sets)
         print(f"Mapping проверен: {args.mapping}")
+
+    if args.snapshot:
+        write_metadata_snapshot(args.snapshot, args.url, entity_sets)
+        print(f"Metadata snapshot сохранен: {args.snapshot}")
+        print("Snapshot не содержит логин, пароль или Authorization headers.")
 
     filters = tuple(args.contains) if args.contains else DEFAULT_HINTS
     if args.all:

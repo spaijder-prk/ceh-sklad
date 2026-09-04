@@ -1,6 +1,6 @@
 # Schema lock для 1С:УНФ
 
-Bridge `0.9.0+` защищает автоматический обмен с облачной УНФ от незаметного изменения опубликованной OData-схемы. Начиная с `0.9.1`, один и тот же lock применяется и к исходящим документам, и к входящему импорту номенклатуры/цен/складов.
+Bridge `0.9.0+` защищает автоматический обмен с облачной УНФ от незаметного изменения опубликованной OData-схемы. Начиная с `0.9.1`, один и тот же lock применяется и к исходящим документам, и к входящему импорту номенклатуры/цен/складов. Начиная с `0.9.2`, `ceh-unf-fresh-health` считается production release gate и не возвращает `ready`, пока schema lock не принят.
 
 ## Как зафиксировать схему
 
@@ -29,11 +29,12 @@ ceh-unf-metadata-validate \
 }
 ```
 
-4. Повторите offline validation и затем `ceh-unf-fresh-health`. Оба должны показать совпадение схемы.
+4. Повторите offline validation и затем `ceh-unf-fresh-health`. Оба должны показать совпадение схемы, а live health — `status=ready`.
 
 ## Fail-safe поведение
 
-- пустое `expected_metadata_structure_sha256` допускается для discovery и dry-run;
+- пустое `expected_metadata_structure_sha256` допускается для discovery и dry-run команд;
+- `ceh-unf-fresh-health` без принятого schema lock возвращает `status=degraded`, потому что это release/readiness gate автоматической эксплуатации;
 - `ceh-unf-fresh-sync --execute` без schema lock завершается до записи документа УНФ;
 - `ceh-unf-fresh-import-products --execute` и `ceh-unf-fresh-import-locations --execute` без schema lock завершаются до записи в `ceh-sklad`;
 - если schema lock задан, но текущая `$metadata` имеет другой канонический digest, блокируются и dry-run, и execute;

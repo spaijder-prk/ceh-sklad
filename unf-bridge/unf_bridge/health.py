@@ -72,6 +72,7 @@ def check_health(
     validate_reference_objects: bool = False,
     backend_readiness: dict[str, Any] | None = None,
     mapping_sha256: str | None = None,
+    require_schema_lock: bool = False,
 ) -> BridgeHealth:
     """Read-only readiness check. Не создает и не подтверждает документы."""
     backend_checked = backend_readiness is not None
@@ -101,7 +102,12 @@ def check_health(
     metadata_digest = metadata_structure_sha256(mapping.application_url, entity_sets)
     expected_metadata_digest = mapping.expected_metadata_structure_sha256
     metadata_matches_expected = (
-        expected_metadata_digest is None or metadata_digest == expected_metadata_digest
+        expected_metadata_digest is not None and metadata_digest == expected_metadata_digest
+    )
+    schema_lock_ready = (
+        metadata_matches_expected
+        if require_schema_lock
+        else expected_metadata_digest is None or metadata_matches_expected
     )
 
     catalog_errors: list[str] = []
@@ -180,7 +186,7 @@ def check_health(
         and not payload_errors
         and catalog_ready
         and references_ready
-        and metadata_matches_expected
+        and schema_lock_ready
     )
     return BridgeHealth(
         status="ready" if is_ready else "degraded",
@@ -266,6 +272,7 @@ def main() -> None:
             validate_reference_objects=True,
             backend_readiness=backend_readiness,
             mapping_sha256=mapping_digest,
+            require_schema_lock=True,
         )
 
     print(json.dumps(asdict(health), ensure_ascii=False, sort_keys=True))

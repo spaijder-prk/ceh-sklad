@@ -38,6 +38,11 @@ def _validate_guid(value: str) -> str:
     return value.lower()
 
 
+def _odata_string(value: str) -> str:
+    """Экранирует текстовый литерал OData без возможности подменить фильтр."""
+    return "'" + value.replace("'", "''") + "'"
+
+
 class FreshODataClient:
     """Низкоуровневый клиент стандартного OData интерфейса 1С:Фреш.
 
@@ -152,6 +157,28 @@ class FreshODataClient:
         if not isinstance(value, list):
             raise RuntimeError("OData вернул неожиданный формат списка")
         return [dict(row) for row in value]
+
+    def find_one_by_text_field(
+        self,
+        resource: str,
+        field: str,
+        value: str,
+    ) -> dict[str, Any] | None:
+        """Ищет объект по устойчивому текстовому ключу перед create/retry."""
+        resource = _validate_resource(resource)
+        field = _validate_resource(field)
+        if not value:
+            raise ValueError("Устойчивый внешний ключ не может быть пустым")
+        rows = self.list(
+            resource,
+            top=2,
+            filter_expression=f"{field} eq {_odata_string(value)}",
+        )
+        if len(rows) > 1:
+            raise RuntimeError(
+                f"Нарушена идемпотентность УНФ: по {resource}.{field} найдено несколько объектов"
+            )
+        return rows[0] if rows else None
 
     def create(self, resource: str, payload: dict[str, Any]) -> dict[str, Any]:
         resource = _validate_resource(resource)

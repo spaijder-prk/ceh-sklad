@@ -139,7 +139,13 @@ def test_builder_supports_header_only_document_and_rejects_unknown_semantics():
 def test_payload_schema_is_checked_against_document_and_row_metadata():
     mapping = TenantMapping.from_dict(MAPPING)
     entities = [
-        ODataEntitySet(name=value, entity_type=f"StandardODATA.{value}", properties=("Ref_Key", "Description"))
+        ODataEntitySet(
+            name=value,
+            entity_type=f"StandardODATA.{value}",
+            properties=("Ref_Key", "Комментарий")
+            if alias in MAPPING["external_key_fields"]
+            else ("Ref_Key", "Description"),
+        )
         for alias, value in MAPPING["resources"].items()
         if alias not in {"sale", "cash_receipt", "prices"}
     ]

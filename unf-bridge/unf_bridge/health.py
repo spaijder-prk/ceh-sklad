@@ -7,7 +7,9 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from .catalog_import import ProductFieldMapping
 from .ceh_client import CehSkladClient
+from .location_import import LocationImportMapping
 from .models import UnfOutboxItem
 from .odata import FreshODataClient, ODataEntitySet
 from .operation_payloads import UnfOperationPayloadFactory
@@ -29,6 +31,8 @@ class BridgeHealth:
     planned_documents: int
     payload_validated_documents: int
     payload_validation_errors: tuple[str, ...]
+    catalog_mapping_ready: bool
+    catalog_mapping_errors: tuple[str, ...]
     post_documents: bool
     mapping_audit_ready: bool
     mapping_audit_errors: tuple[str, ...]
@@ -42,11 +46,26 @@ def check_health(
     *,
     limit: int = 100,
     mapping_audit: TenantAuditReport | None = None,
+    product_mapping: ProductFieldMapping | None = None,
+    location_mapping: LocationImportMapping | None = None,
 ) -> BridgeHealth:
     """Read-only readiness check. Не создает и не подтверждает документы."""
     profile = ceh_client.profile()
     entity_sets: list[ODataEntitySet] = fresh_client.entity_sets()
     mapping.validate_against_metadata(entity_sets)
+
+    catalog_errors: list[str] = []
+    if product_mapping is not None:
+        try:
+            product_mapping.validate_against_metadata(entity_sets, mapping.resources["products"])
+        except ValueError as exc:
+            catalog_errors.append(f"products: {exc}")
+    if location_mapping is not None:
+        try:
+            location_mapping.validate_against_metadata(entity_sets, mapping.resources["warehouses"])
+        except ValueError as exc:
+            catalog_errors.append(f"locations: {exc}")
+
     items: list[UnfOutboxItem] = ceh_client.outbox(max(1, min(limit, 100)))
 
     audit_ready = mapping_audit is None or mapping_audit.status == "ready"
@@ -80,7 +99,8 @@ def check_health(
         else:
             blocked += 1
 
-    is_ready = blocked == 0 and audit_ready and not payload_errors
+    catalog_ready = not catalog_errors
+    is_ready = blocked == 0 and audit_ready and not payload_errors and catalog_ready
     return BridgeHealth(
         status="ready" if is_ready else "degraded",
         contract_version=profile.contract_version,
@@ -93,6 +113,8 @@ def check_health(
         planned_documents=planned_documents,
         payload_validated_documents=payload_validated_documents,
         payload_validation_errors=tuple(payload_errors),
+        catalog_mapping_ready=catalog_ready,
+        catalog_mapping_errors=tuple(catalog_errors),
         post_documents=mapping.post_documents,
         mapping_audit_ready=audit_ready,
         mapping_audit_errors=audit_errors,
@@ -125,6 +147,8 @@ def main() -> None:
 
     mapping = TenantMapping.load(args.mapping)
     mapping_audit = audit_mapping_file(args.mapping)
+    product_mapping = ProductFieldMapping.load(args.mapping) if mapping_audit.status == "ready" else None
+    location_mapping = LocationImportMapping.load(args.mapping) if mapping_audit.status == "ready" else None
     with CehSkladClient(
         args.ceh_url,
         ceh_key,
@@ -140,6 +164,8 @@ def main() -> None:
             mapping,
             limit=max(1, min(args.limit, 100)),
             mapping_audit=mapping_audit,
+            product_mapping=product_mapping,
+            location_mapping=location_mapping,
         )
 
     print(json.dumps(asdict(health), ensure_ascii=False, sort_keys=True))

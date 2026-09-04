@@ -1,12 +1,15 @@
 from decimal import Decimal
 
+from unf_bridge.catalog_import import ProductFieldMapping
 from unf_bridge.health import check_health
+from unf_bridge.location_import import LocationImportMapping
 from unf_bridge.models import UnfLine, UnfOutboxItem, UnfProfile
 from unf_bridge.odata import ODataEntitySet
 from unf_bridge.tenant_audit import TenantAuditReport
 from unf_bridge.tenant_config import TenantMapping
 
 
+WAREHOUSE = "11111111-1111-1111-1111-111111111111"
 BASE = {
     "provider": "1cfresh",
     "application_url": "https://1cfresh.example/a/unf/100",
@@ -75,6 +78,32 @@ class FakeFresh:
         return result
 
 
+class FakeFreshCatalogFields(FakeFresh):
+    def entity_sets(self):
+        rows = super().entity_sets()
+        result = []
+        for row in rows:
+            if row.name == BASE["resources"]["products"]:
+                result.append(
+                    ODataEntitySet(
+                        name=row.name,
+                        entity_type=row.entity_type,
+                        properties=("Ref_Key", "Артикул", "Description", "Единица"),
+                    )
+                )
+            elif row.name == BASE["resources"]["warehouses"]:
+                result.append(
+                    ODataEntitySet(
+                        name=row.name,
+                        entity_type=row.entity_type,
+                        properties=("Ref_Key", "Description"),
+                    )
+                )
+            else:
+                result.append(row)
+        return result
+
+
 def item(*, ready=True):
     return UnfOutboxItem(
         entity_type="stock_document",
@@ -129,6 +158,8 @@ def test_health_ready_is_read_only_summary_without_explicit_static_audit():
     assert health.planned_documents == 1
     assert health.payload_validated_documents == 0
     assert health.payload_validation_errors == ()
+    assert health.catalog_mapping_ready is True
+    assert health.catalog_mapping_errors == ()
     assert health.published_entity_sets == len(BASE["resources"])
     assert health.mapping_audit_ready is True
 
@@ -173,3 +204,27 @@ def test_health_degraded_when_ready_outbox_cannot_build_payload():
     assert len(health.payload_validation_errors) == 1
     assert "doc-1" in health.payload_validation_errors[0]
     assert "payload_schemas.transfer" in health.payload_validation_errors[0]
+
+
+def test_health_degraded_when_catalog_import_field_is_absent_from_metadata():
+    product_mapping = ProductFieldMapping.from_dict(
+        {"product_fields": {"ref": "MissingRef", "sku": "Артикул", "name": "Description"}}
+    )
+    location_mapping = LocationImportMapping.from_dict(
+        {
+            "location_fields": {"ref": "Ref_Key", "name": "Description"},
+            "location_allowlist": {WAREHOUSE: {"kind": "warehouse"}},
+        }
+    )
+    health = check_health(
+        FakeCeh([]),  # type: ignore[arg-type]
+        FakeFreshCatalogFields(),  # type: ignore[arg-type]
+        TenantMapping.from_dict(BASE),
+        product_mapping=product_mapping,
+        location_mapping=location_mapping,
+    )
+    assert health.status == "degraded"
+    assert health.catalog_mapping_ready is False
+    assert len(health.catalog_mapping_errors) == 1
+    assert "products:" in health.catalog_mapping_errors[0]
+    assert "MissingRef" in health.catalog_mapping_errors[0]

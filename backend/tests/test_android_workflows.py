@@ -38,3 +38,15 @@ def test_android_release_workflow_keeps_manifest_and_removes_keystore():
     assert 'rm -f "$RUNNER_TEMP/ceh-sklad-release.keystore"' in workflow
     assert "CEH_ANDROID_KEYSTORE_BASE64" in workflow
     assert "actions/upload-artifact@v4" in workflow
+
+
+def test_android_workflows_use_current_java_setup_action():
+    workflows = [
+        (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"),
+        (ROOT / ".github/workflows/android-release.yml").read_text(encoding="utf-8"),
+        (ROOT / ".github/workflows/android-instrumented.yml").read_text(encoding="utf-8"),
+    ]
+
+    for workflow in workflows:
+        assert "actions/setup-java@v4" not in workflow
+        assert "actions/setup-java@v5" in workflow

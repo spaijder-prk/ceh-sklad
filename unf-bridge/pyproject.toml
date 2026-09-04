@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ceh-sklad-unf-bridge"
-version = "0.5.0"
+version = "0.6.0"
 description = "Bridge между ceh-sklad и облачной 1С:УНФ"
 requires-python = ">=3.12"
 dependencies = [
@@ -17,11 +17,11 @@ dev = [
 ]
 
 [project.scripts]
-ceh-unf-bridge = "unf_bridge.cli:main"
-ceh-unf-fresh-probe = "unf_bridge.fresh_probe:main"
-ceh-unf-fresh-sync = "unf_bridge.fresh_sync:main"
-ceh-unf-fresh-import-products = "unf_bridge.catalog_import:main"
-ceh-unf-fresh-import-locations = "unf_bridge.location_import:main"
+ceh-unf-bridge = "unf_bridge.remote_entrypoints:bridge_main"
+ceh-unf-fresh-probe = "unf_bridge.remote_entrypoints:fresh_probe_main"
+ceh-unf-fresh-sync = "unf_bridge.remote_entrypoints:fresh_sync_main"
+ceh-unf-fresh-import-products = "unf_bridge.remote_entrypoints:import_products_main"
+ceh-unf-fresh-import-locations = "unf_bridge.remote_entrypoints:import_locations_main"
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -59,46 +58,36 @@ fun RepresentativeOperationsPanel(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(
-                text = "Операции",
-                style = MaterialTheme.typography.titleMedium,
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(
+            Text("Операции", style = MaterialTheme.typography.titleMedium)
+            Button(
+                onClick = {
+                    viewModel.clearOperationFeedback()
+                    saleOpen = true
+                },
+                enabled = state.representativeBalances.isNotEmpty() && !state.operationLoading,
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Button(
-                    onClick = {
-                        viewModel.clearOperationFeedback()
-                        saleOpen = true
-                    },
-                    enabled = state.representativeBalances.isNotEmpty() && !state.operationLoading,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text("Продажа")
-                }
-                OutlinedButton(
-                    onClick = {
-                        viewModel.clearOperationFeedback()
-                        returnOpen = true
-                    },
-                    enabled = state.representativeBalances.isNotEmpty() &&
-                        state.warehouses.isNotEmpty() &&
-                        !state.operationLoading,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text("Возврат")
-                }
+                Text("Продажа")
+            }
+            OutlinedButton(
+                onClick = {
+                    viewModel.clearOperationFeedback()
+                    returnOpen = true
+                },
+                enabled = state.representativeBalances.isNotEmpty() &&
+                    state.warehouses.isNotEmpty() &&
+                    !state.operationLoading,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Возврат")
             }
 
             state.operationMessage?.let { message ->
-                Spacer(Modifier.height(8.dp))
                 Text(message, color = MaterialTheme.colorScheme.primary)
             }
             state.operationError?.let { message ->
-                Spacer(Modifier.height(8.dp))
                 Text(message, color = MaterialTheme.colorScheme.error)
             }
         }
@@ -109,16 +98,9 @@ fun RepresentativeOperationsPanel(
             products = state.representativeBalances,
             loading = state.operationLoading,
             error = state.operationError,
-            onDismiss = {
-                if (!state.operationLoading) saleOpen = false
-            },
+            onDismiss = { if (!state.operationLoading) saleOpen = false },
             onSubmit = { productId, quantity, priceType, externalId ->
-                viewModel.registerSale(
-                    productId = productId,
-                    quantity = quantity,
-                    priceType = priceType,
-                    externalId = externalId,
-                )
+                viewModel.registerSale(productId, quantity, priceType, externalId)
             },
         )
     }
@@ -129,16 +111,9 @@ fun RepresentativeOperationsPanel(
             warehouses = state.warehouses,
             loading = state.operationLoading,
             error = state.operationError,
-            onDismiss = {
-                if (!state.operationLoading) returnOpen = false
-            },
+            onDismiss = { if (!state.operationLoading) returnOpen = false },
             onSubmit = { productId, quantity, warehouseId, externalId ->
-                viewModel.registerReturn(
-                    productId = productId,
-                    quantity = quantity,
-                    warehouseId = warehouseId,
-                    externalId = externalId,
-                )
+                viewModel.registerReturn(productId, quantity, warehouseId, externalId)
             },
         )
     }
@@ -160,15 +135,12 @@ private fun SaleDialog(
     val selectedProduct = products.firstOrNull { it.productId == selectedProductId }
         ?: products.firstOrNull()
     val quantity = parseQuantity(quantityText)
-    val validQuantity = quantity != null &&
-        quantity > BigDecimal.ZERO &&
-        selectedProduct != null &&
-        quantity <= selectedProduct.quantity
+    val validQuantity = quantity.isValidFor(selectedProduct)
     val unitPrice = selectedProduct?.let {
         if (priceType == PRICE_RETAIL) it.retailPrice else it.wholesalePrice
     }
-    val amount = if (validQuantity && unitPrice != null) {
-        quantity!!.multiply(unitPrice).setScale(2, RoundingMode.HALF_UP)
+    val amount = if (validQuantity && unitPrice != null && quantity != null) {
+        quantity.multiply(unitPrice).setScale(2, RoundingMode.HALF_UP)
     } else {
         null
     }
@@ -195,18 +167,14 @@ private fun SaleDialog(
                     Text("Доступно: ${it.quantity.clean()} ${it.unit}")
                 }
 
-                OutlinedTextField(
+                QuantityField(
                     value = quantityText,
-                    onValueChange = {
+                    valid = validQuantity,
+                    loading = loading,
+                    onChange = {
                         quantityText = it
                         resetExternalId()
                     },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Количество") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    enabled = !loading,
-                    isError = quantityText.isNotBlank() && !validQuantity,
                 )
 
                 Text("Цена")
@@ -233,10 +201,7 @@ private fun SaleDialog(
 
                 unitPrice?.let { Text("Цена за единицу: ${it.money()} ₽") }
                 amount?.let {
-                    Text(
-                        text = "Сумма: ${it.money()} ₽",
-                        style = MaterialTheme.typography.titleMedium,
-                    )
+                    Text("Сумма: ${it.money()} ₽", style = MaterialTheme.typography.titleMedium)
                 }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
@@ -254,9 +219,7 @@ private fun SaleDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !loading) {
-                Text("Отмена")
-            }
+            TextButton(onClick = onDismiss, enabled = !loading) { Text("Отмена") }
         },
     )
 }
@@ -280,10 +243,7 @@ private fun ReturnDialog(
     val selectedWarehouse = warehouses.firstOrNull { it.id == selectedWarehouseId }
         ?: warehouses.firstOrNull()
     val quantity = parseQuantity(quantityText)
-    val validQuantity = quantity != null &&
-        quantity > BigDecimal.ZERO &&
-        selectedProduct != null &&
-        quantity <= selectedProduct.quantity
+    val validQuantity = quantity.isValidFor(selectedProduct)
 
     fun resetExternalId() {
         externalId = newExternalId("return")
@@ -316,18 +276,14 @@ private fun ReturnDialog(
                     },
                 )
 
-                OutlinedTextField(
+                QuantityField(
                     value = quantityText,
-                    onValueChange = {
+                    valid = validQuantity,
+                    loading = loading,
+                    onChange = {
                         quantityText = it
                         resetExternalId()
                     },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Количество") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    enabled = !loading,
-                    isError = quantityText.isNotBlank() && !validQuantity,
                 )
 
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
@@ -337,12 +293,7 @@ private fun ReturnDialog(
             TextButton(
                 onClick = {
                     if (selectedProduct != null && selectedWarehouse != null && quantity != null) {
-                        onSubmit(
-                            selectedProduct.productId,
-                            quantity,
-                            selectedWarehouse.id,
-                            externalId,
-                        )
+                        onSubmit(selectedProduct.productId, quantity, selectedWarehouse.id, externalId)
                     }
                 },
                 enabled = validQuantity && selectedWarehouse != null && !loading,
@@ -351,10 +302,28 @@ private fun ReturnDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !loading) {
-                Text("Отмена")
-            }
+            TextButton(onClick = onDismiss, enabled = !loading) { Text("Отмена") }
         },
+    )
+}
+
+@Composable
+private fun QuantityField(
+    value: String,
+    valid: Boolean,
+    loading: Boolean,
+    onChange: (String) -> Unit,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onChange,
+        modifier = Modifier.fillMaxWidth(),
+        label = { Text("Количество") },
+        supportingText = { Text("Не более 3 знаков после запятой") },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+        enabled = !loading,
+        isError = value.isNotBlank() && !valid,
     )
 }
 
@@ -375,10 +344,7 @@ private fun ProductSelector(
         ) {
             Text(selected?.let { "${it.productName} · ${it.sku}" } ?: "Нет товара")
         }
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-        ) {
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             products.forEach { product ->
                 DropdownMenuItem(
                     text = { Text("${product.productName} · ${product.quantity.clean()} ${product.unit}") },
@@ -409,10 +375,7 @@ private fun WarehouseSelector(
         ) {
             Text(selected?.let { "${it.name} · ${it.code}" } ?: "Нет складов")
         }
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-        ) {
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             warehouses.forEach { warehouse ->
                 DropdownMenuItem(
                     text = { Text("${warehouse.name} · ${warehouse.code}") },
@@ -430,6 +393,11 @@ private fun newExternalId(kind: String): String = "android-$kind-${UUID.randomUU
 
 private fun parseQuantity(value: String): BigDecimal? =
     value.trim().replace(',', '.').toBigDecimalOrNull()
+
+private fun BigDecimal?.isValidFor(product: RepresentativeBalanceDto?): Boolean {
+    if (this == null || product == null || this <= BigDecimal.ZERO || this > product.quantity) return false
+    return stripTrailingZeros().scale() <= 3
+}
 
 private fun BigDecimal.clean(): String = stripTrailingZeros().toPlainString()
 

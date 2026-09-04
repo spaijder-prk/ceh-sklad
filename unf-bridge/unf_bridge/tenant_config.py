@@ -51,6 +51,72 @@ def _metadata_has_path(entity: ODataEntitySet, path: str) -> bool:
     return root in entity.properties or root in {item.name for item in entity.navigation}
 
 
+def _validate_direct_field(value: str, *, description: str) -> str:
+    if not value or not _RESOURCE_RE.fullmatch(value) or "/" in value:
+        raise ValueError(f"{description} должно быть прямым OData-полем")
+    return value
+
+
+def _validate_semantic_name(value: str) -> str:
+    if not value or not _RESOURCE_RE.fullmatch(value):
+        raise ValueError("Некорректный semantic alias tenant mapping")
+    return value
+
+
+@dataclass(frozen=True)
+class DocumentTableMapping:
+    property: str
+    row_resource: str
+    fields: dict[str, str]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DocumentTableMapping":
+        property_name = _validate_direct_field(
+            str(data.get("property", "")).strip(),
+            description="Имя табличной части",
+        )
+        row_resource = _validate_direct_field(
+            str(data.get("row_resource", "")).strip(),
+            description="EntitySet строки табличной части",
+        )
+        fields: dict[str, str] = {}
+        for semantic, actual in dict(data.get("fields", {})).items():
+            semantic_name = _validate_semantic_name(str(semantic).strip())
+            actual_name = _validate_direct_field(
+                str(actual).strip(),
+                description=f"Поле строки {semantic_name}",
+            )
+            if actual_name == "LineNumber":
+                raise ValueError("LineNumber управляется bridge и не задается в fields")
+            fields[semantic_name] = actual_name
+        if not fields:
+            raise ValueError("Для табличной части не заданы поля строк")
+        return cls(property=property_name, row_resource=row_resource, fields=fields)
+
+
+@dataclass(frozen=True)
+class DocumentPayloadMapping:
+    header_fields: dict[str, str]
+    table: DocumentTableMapping | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DocumentPayloadMapping":
+        header_fields: dict[str, str] = {}
+        for semantic, actual in dict(data.get("header_fields", {})).items():
+            semantic_name = _validate_semantic_name(str(semantic).strip())
+            header_fields[semantic_name] = _validate_direct_field(
+                str(actual).strip(),
+                description=f"Поле шапки {semantic_name}",
+            )
+        table_raw = data.get("table")
+        if table_raw is not None and not isinstance(table_raw, dict):
+            raise ValueError("table в payload_schemas должен быть JSON-объектом")
+        return cls(
+            header_fields=header_fields,
+            table=DocumentTableMapping.from_dict(table_raw) if isinstance(table_raw, dict) else None,
+        )
+
+
 @dataclass(frozen=True)
 class TenantMapping:
     provider: str
@@ -61,6 +127,7 @@ class TenantMapping:
     external_key_fields: dict[str, str]
     price_fields: dict[str, str]
     constants: dict[str, str]
+    payload_schemas: dict[str, DocumentPayloadMapping]
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TenantMapping":
@@ -86,14 +153,15 @@ class TenantMapping:
         missing_resources = [key for key in REQUIRED_RESOURCES if not resources.get(key)]
         if missing_resources:
             raise ValueError("Не заданы OData resources: " + ", ".join(missing_resources))
+
         missing_external_fields = [key for key in DOCUMENT_RESOURCES if not external_key_fields.get(key)]
         if missing_external_fields:
             raise ValueError(
                 "Не заданы поля устойчивого внешнего ключа: " + ", ".join(missing_external_fields)
             )
         for alias, field in external_key_fields.items():
-            if alias in DOCUMENT_RESOURCES and (not _RESOURCE_RE.fullmatch(field) or "/" in field):
-                raise ValueError(f"Поле устойчивого ключа {alias} должно быть прямым OData-полем")
+            if alias in DOCUMENT_RESOURCES:
+                _validate_direct_field(field, description=f"Поле устойчивого ключа {alias}")
 
         missing_price_fields = [key for key in REQUIRED_PRICE_FIELDS if not price_fields.get(key)]
         if missing_price_fields:
@@ -107,12 +175,20 @@ class TenantMapping:
             raise ValueError(
                 "Не заданы обязательные сопоставления видов цен УНФ: " + ", ".join(missing_constants)
             )
-
         for key, value in constants.items():
             if key.endswith("_ref") and value and not _GUID_RE.fullmatch(value):
                 raise ValueError(f"{key} должен содержать Ref_Key GUID из УНФ")
         if constants["retail_price_type_ref"].lower() == constants["wholesale_price_type_ref"].lower():
             raise ValueError("Розничный и оптовый виды цен УНФ должны быть разными")
+
+        payload_schemas: dict[str, DocumentPayloadMapping] = {}
+        for alias, raw_schema in dict(data.get("payload_schemas", {})).items():
+            alias_name = _validate_semantic_name(str(alias).strip())
+            if alias_name not in DOCUMENT_RESOURCES:
+                raise ValueError(f"Неизвестный документ в payload_schemas: {alias_name}")
+            if not isinstance(raw_schema, dict):
+                raise ValueError(f"payload_schemas.{alias_name} должен быть JSON-объектом")
+            payload_schemas[alias_name] = DocumentPayloadMapping.from_dict(raw_schema)
 
         return cls(
             provider=provider,
@@ -123,6 +199,7 @@ class TenantMapping:
             external_key_fields=external_key_fields,
             price_fields=price_fields,
             constants=constants,
+            payload_schemas=payload_schemas,
         )
 
     @classmethod
@@ -156,6 +233,60 @@ class TenantMapping:
                 if not _metadata_has_path(price_entity, field):
                     missing_fields.append(f"prices: {price_resource}.{field}")
 
+        for alias, schema in self.payload_schemas.items():
+            document_resource = self.resources[alias]
+            document_entity = by_name[document_resource]
+
+            if document_entity.properties:
+                for semantic, field in schema.header_fields.items():
+                    if field not in document_entity.properties:
+                        missing_fields.append(
+                            f"payload {alias}.{semantic}: {document_resource}.{field}"
+                        )
+
+            if schema.table is None:
+                continue
+
+            table_name = schema.table.property
+            table_field = next((field for field in document_entity.fields if field.name == table_name), None)
+            table_navigation = next(
+                (item for item in document_entity.navigation if item.name == table_name),
+                None,
+            )
+            if document_entity.properties or document_entity.navigation:
+                if table_field is None and table_navigation is None:
+                    missing_fields.append(
+                        f"payload {alias}.table: {document_resource}.{table_name}"
+                    )
+                else:
+                    collection_type = (
+                        table_field.edm_type if table_field is not None else table_navigation.target_type
+                    )
+                    if collection_type != "unknown" and not collection_type.startswith("Collection("):
+                        missing_fields.append(
+                            f"payload {alias}.table: {document_resource}.{table_name} не Collection"
+                        )
+
+            row_entity = by_name.get(schema.table.row_resource)
+            if row_entity is None:
+                missing.append(schema.table.row_resource)
+                continue
+            if row_entity.properties:
+                if "LineNumber" not in row_entity.properties:
+                    missing_fields.append(
+                        f"payload {alias}.table: {schema.table.row_resource}.LineNumber"
+                    )
+                for semantic, field in schema.table.fields.items():
+                    if field not in row_entity.properties:
+                        missing_fields.append(
+                            f"payload {alias}.row.{semantic}: {schema.table.row_resource}.{field}"
+                        )
+
+        if missing:
+            raise ValueError(
+                "В $metadata tenant отсутствуют настроенные OData resources: "
+                + ", ".join(sorted(set(missing)))
+            )
         if missing_fields:
             raise ValueError(
                 "В $metadata tenant отсутствуют настроенные поля: " + ", ".join(missing_fields)
@@ -168,5 +299,6 @@ class TenantMapping:
             "timezone": self.timezone,
             "post_documents": self.post_documents,
             "resources": dict(self.resources),
+            "payload_schemas": sorted(self.payload_schemas),
             "configured_constants": sorted(key for key, value in self.constants.items() if value),
         }

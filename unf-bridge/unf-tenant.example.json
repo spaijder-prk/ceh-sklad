@@ -24,8 +24,8 @@
     "stock_writeoff": "REPLACE_FIELD_FROM_METADATA"
   },
   "price_fields": {
-    "product_ref": "REPLACE_FIELD_FROM_METADATA",
-    "price_type_ref": "REPLACE_FIELD_FROM_METADATA",
+    "product_ref": "REPLACE_FIELD_OR_SAFE_PATH_FROM_METADATA",
+    "price_type_ref": "REPLACE_FIELD_OR_SAFE_PATH_FROM_METADATA",
     "value": "REPLACE_FIELD_FROM_METADATA"
   },
   "constants": {
@@ -36,5 +36,75 @@
     "cash_flow_item_ref": "",
     "retail_customer_ref": "",
     "wholesale_customer_ref": ""
+  },
+  "payload_schemas": {
+    "transfer": {
+      "header_fields": {
+        "organization_ref": "REPLACE_FIELD_FROM_METADATA",
+        "source_location_ref": "REPLACE_FIELD_FROM_METADATA",
+        "destination_location_ref": "REPLACE_FIELD_FROM_METADATA"
+      },
+      "table": {
+        "property": "REPLACE_TABLE_PROPERTY_FROM_METADATA",
+        "row_resource": "REPLACE_TABLE_ROW_ENTITYSET_FROM_METADATA",
+        "fields": {
+          "product_ref": "REPLACE_FIELD_FROM_METADATA",
+          "quantity": "REPLACE_FIELD_FROM_METADATA"
+        }
+      }
+    },
+    "sale": {
+      "header_fields": {
+        "organization_ref": "REPLACE_FIELD_FROM_METADATA",
+        "warehouse_ref": "REPLACE_FIELD_FROM_METADATA",
+        "customer_ref": "REPLACE_FIELD_FROM_METADATA"
+      },
+      "table": {
+        "property": "REPLACE_TABLE_PROPERTY_FROM_METADATA",
+        "row_resource": "REPLACE_TABLE_ROW_ENTITYSET_FROM_METADATA",
+        "fields": {
+          "product_ref": "REPLACE_FIELD_FROM_METADATA",
+          "quantity": "REPLACE_FIELD_FROM_METADATA",
+          "unit_price": "REPLACE_FIELD_FROM_METADATA"
+        }
+      }
+    },
+    "cash_receipt": {
+      "header_fields": {
+        "organization_ref": "REPLACE_FIELD_FROM_METADATA",
+        "cashbox_ref": "REPLACE_FIELD_FROM_METADATA",
+        "cash_flow_item_ref": "REPLACE_FIELD_FROM_METADATA",
+        "payer_ref": "REPLACE_FIELD_FROM_METADATA",
+        "amount": "REPLACE_FIELD_FROM_METADATA"
+      }
+    },
+    "stock_receipt": {
+      "header_fields": {
+        "organization_ref": "REPLACE_FIELD_FROM_METADATA",
+        "warehouse_ref": "REPLACE_FIELD_FROM_METADATA"
+      },
+      "table": {
+        "property": "REPLACE_TABLE_PROPERTY_FROM_METADATA",
+        "row_resource": "REPLACE_TABLE_ROW_ENTITYSET_FROM_METADATA",
+        "fields": {
+          "product_ref": "REPLACE_FIELD_FROM_METADATA",
+          "quantity": "REPLACE_FIELD_FROM_METADATA"
+        }
+      }
+    },
+    "stock_writeoff": {
+      "header_fields": {
+        "organization_ref": "REPLACE_FIELD_FROM_METADATA",
+        "warehouse_ref": "REPLACE_FIELD_FROM_METADATA"
+      },
+      "table": {
+        "property": "REPLACE_TABLE_PROPERTY_FROM_METADATA",
+        "row_resource": "REPLACE_TABLE_ROW_ENTITYSET_FROM_METADATA",
+        "fields": {
+          "product_ref": "REPLACE_FIELD_FROM_METADATA",
+          "quantity": "REPLACE_FIELD_FROM_METADATA"
+        }
+      }
+    }
   }
 }

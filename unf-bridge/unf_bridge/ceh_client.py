@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -67,6 +67,17 @@ class CehSkladClient:
         )
         response.raise_for_status()
         return [UnfOutboxItem.from_json(row) for row in response.json()]
+
+    def product_archive_check(self, external_1c_id: str) -> dict[str, Any]:
+        encoded = quote(external_1c_id, safe="")
+        response = self._client.get(
+            f"/api/v1/integration/1c/products/{encoded}/archive-check"
+        )
+        response.raise_for_status()
+        body = response.json()
+        if not isinstance(body, dict):
+            raise RuntimeError("ceh-sklad вернул неожиданный ответ archive-check товара")
+        return dict(body)
 
     def import_product(self, payload: dict[str, Any]) -> dict[str, Any]:
         response = self._client.post("/api/v1/integration/1c/products", json=payload)

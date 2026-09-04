@@ -188,21 +188,21 @@ class FreshProductImporter:
             if len(unit_name) > 30:
                 reasons.append("Наименование единицы измерения длиннее 30 символов")
 
+            policy = self.product_mapping.deletion_policy
             deletion_field = fields.get("deletion_mark")
-            if deletion_field:
+            if policy != "ignore" and deletion_field:
                 try:
                     marked_deleted = _parse_deletion_mark(row.get(deletion_field))
                 except ValueError as exc:
                     reasons.append(str(exc))
 
-            if self.product_mapping.deletion_policy == "archive_if_zero_stock":
+            if policy == "archive_if_zero_stock":
                 version_field = fields.get("version")
                 source_version = str(row.get(version_field, "")).strip() if version_field else ""
                 if not source_version:
                     reasons.append("Не прочитана версия номенклатуры для безопасной идемпотентности")
 
             if marked_deleted and not reasons:
-                policy = self.product_mapping.deletion_policy
                 if policy == "skip":
                     action = "skip"
                 elif policy == "block":
@@ -228,6 +228,7 @@ class FreshProductImporter:
 
             payload: dict[str, Any] | None = None
             if not reasons and action != "skip":
+                is_active = not marked_deleted if policy == "archive_if_zero_stock" else True
                 payload = {
                     "external_1c_id": external_ref,
                     "sku": sku,
@@ -235,18 +236,10 @@ class FreshProductImporter:
                     "unit_name": unit_name,
                     "retail_price": str(Decimal(prices.retail)),
                     "wholesale_price": str(Decimal(prices.wholesale)),
-                    "is_active": not marked_deleted,
+                    "is_active": is_active,
                 }
-                key_version = (
-                    source_version
-                    if self.product_mapping.deletion_policy == "archive_if_zero_stock"
-                    else None
-                )
-                key_mark = (
-                    marked_deleted
-                    if self.product_mapping.deletion_policy == "archive_if_zero_stock"
-                    else None
-                )
+                key_version = source_version if policy == "archive_if_zero_stock" else None
+                key_mark = marked_deleted if policy == "archive_if_zero_stock" else None
                 payload["operation_key"] = _operation_key(
                     payload,
                     source_version=key_version,

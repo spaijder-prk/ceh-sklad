@@ -24,6 +24,9 @@ def args() -> argparse.Namespace:
         price_type="retail",
         product_id="product-1",
         location_id="location-1",
+        min_success_rate=100.0,
+        max_p95_ms=0.0,
+        min_throughput_rps=0.0,
     )
 
 
@@ -54,6 +57,8 @@ def test_execution_report_contains_acceptance_metrics_and_failure_samples():
     assert report.latency_p95_ms == 100.0
     assert report.latency_max_ms == 100.0
     assert report.idempotency_verified is True
+    assert report.thresholds_passed is False
+    assert "success_rate" in "\n".join(report.threshold_violations)
     assert report.failure_samples == (
         {"index": 3, "status_code": 500, "latency_ms": 100.0, "error": "boom"},
     )
@@ -67,4 +72,5 @@ def test_dry_run_report_does_not_fake_performance_metrics():
     assert report.throughput_rps is None
     assert report.latency_p95_ms is None
     assert report.idempotency_verified is False
+    assert report.thresholds_passed is None
     assert report.required_quantity == "6.0"

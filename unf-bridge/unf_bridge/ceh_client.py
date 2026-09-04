@@ -66,6 +66,14 @@ class CehSkladClient:
             raise RuntimeError("ceh-sklad вернул неожиданный ответ импорта товара")
         return dict(body)
 
+    def import_location(self, payload: dict[str, Any]) -> dict[str, Any]:
+        response = self._client.post("/api/v1/integration/1c/locations", json=payload)
+        response.raise_for_status()
+        body = response.json()
+        if not isinstance(body, dict):
+            raise RuntimeError("ceh-sklad вернул неожиданный ответ импорта склада")
+        return dict(body)
+
     def confirm_single(self, profile: UnfProfile, item: UnfOutboxItem, external_1c_id: str) -> None:
         response = self._client.post(
             profile.confirm_export_path,

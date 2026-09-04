@@ -29,6 +29,20 @@
     "name": "REPLACE_FIELD_FROM_METADATA",
     "unit_name": "REPLACE_FIELD_FROM_METADATA_OR_REMOVE_THIS_LINE"
   },
+  "location_fields": {
+    "ref": "REPLACE_FIELD_FROM_METADATA",
+    "name": "REPLACE_FIELD_FROM_METADATA"
+  },
+  "location_allowlist": {
+    "REPLACE_CENTRAL_WAREHOUSE_GUID": {
+      "kind": "warehouse",
+      "name_override": ""
+    },
+    "REPLACE_REPRESENTATIVE_WAREHOUSE_GUID": {
+      "kind": "representative",
+      "name_override": "Склад представителя"
+    }
+  },
   "price_fields": {
     "product_ref": "REPLACE_FIELD_OR_SAFE_PATH_FROM_METADATA",
     "price_type_ref": "REPLACE_FIELD_OR_SAFE_PATH_FROM_METADATA",

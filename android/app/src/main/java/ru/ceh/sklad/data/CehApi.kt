@@ -5,8 +5,8 @@ import retrofit2.http.Field
 import retrofit2.http.FormUrlEncoded
 import retrofit2.http.GET
 import retrofit2.http.POST
-import retrofit2.http.Query
 import retrofit2.http.Path
+import retrofit2.http.Query
 
 interface CehApi {
     @FormUrlEncoded
@@ -18,6 +18,9 @@ interface CehApi {
 
     @GET("api/v1/auth/me")
     suspend fun currentUser(): UserDto
+
+    @GET("api/v1/warehouses")
+    suspend fun warehouses(): List<WarehouseDto>
 
     @GET("api/v1/representatives")
     suspend fun representatives(): List<RepresentativeDto>

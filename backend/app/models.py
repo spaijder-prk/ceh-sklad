@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
 from uuid import UUID, uuid4
 
 from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, Numeric, String, Text, Uuid
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from .db import Base
+
+
+MONEY_STEP = Decimal("0.01")
 
 
 class UserRole(StrEnum):
@@ -183,3 +186,7 @@ class MoneyPosting(Base):
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     external_id: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    @validates("amount")
+    def normalize_amount(self, _, value: Decimal) -> Decimal:
+        return Decimal(value).quantize(MONEY_STEP, rounding=ROUND_HALF_UP)

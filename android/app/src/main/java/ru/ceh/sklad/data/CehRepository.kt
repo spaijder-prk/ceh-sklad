@@ -47,12 +47,14 @@ class CehRepository(context: Context) {
 
     suspend fun loadDashboard(): DashboardData {
         val user = api.currentUser()
+        val warehouses = api.warehouses()
         val warehouseBalances = api.warehouseBalances()
 
         if (user.role != ROLE_REPRESENTATIVE) {
             return DashboardData(
                 user = user,
                 representative = null,
+                warehouses = warehouses,
                 warehouseBalances = warehouseBalances,
                 representativeBalances = emptyList(),
                 debt = null,
@@ -67,6 +69,7 @@ class CehRepository(context: Context) {
         return DashboardData(
             user = user,
             representative = representative,
+            warehouses = warehouses,
             warehouseBalances = warehouseBalances,
             representativeBalances = ownBalances,
             debt = debt,

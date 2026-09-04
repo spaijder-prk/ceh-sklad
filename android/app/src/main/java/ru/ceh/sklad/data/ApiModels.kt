@@ -15,6 +15,12 @@ data class UserDto(
     val role: String,
 )
 
+data class WarehouseDto(
+    val id: String,
+    val code: String,
+    val name: String,
+)
+
 data class RepresentativeDto(
     val id: String,
     val code: String,
@@ -88,6 +94,7 @@ data class OperationResultDto(
 data class DashboardData(
     val user: UserDto,
     val representative: RepresentativeDto?,
+    val warehouses: List<WarehouseDto>,
     val warehouseBalances: List<WarehouseBalanceDto>,
     val representativeBalances: List<RepresentativeBalanceDto>,
     val debt: BigDecimal?,

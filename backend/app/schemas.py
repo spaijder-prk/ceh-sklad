@@ -1,9 +1,12 @@
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .models import PriceType, UserRole
+
+
+MONEY_STEP = Decimal("0.01")
 
 
 class ORMModel(BaseModel):
@@ -149,6 +152,11 @@ class OperationResult(BaseModel):
     document_id: UUID | None = None
     money_posting_id: UUID | None = None
     debt_delta: Decimal = Decimal("0")
+
+    @field_validator("debt_delta")
+    @classmethod
+    def normalize_debt_delta(cls, value: Decimal) -> Decimal:
+        return Decimal(value).quantize(MONEY_STEP, rounding=ROUND_HALF_UP)
 
 
 class WarehouseBalanceLine(BaseModel):

@@ -1,0 +1,30 @@
+name: Проверка Android
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+
+      - name: Настроить Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Настроить Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.6.0"
+
+      - name: Собрать debug APK
+        run: gradle :app:assembleDebug --stacktrace

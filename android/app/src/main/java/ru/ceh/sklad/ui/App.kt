@@ -223,6 +223,9 @@ private fun DashboardScreen(
 
             if (state.user?.role == "representative") {
                 item {
+                    RepresentativeOperationsPanel(state = state)
+                }
+                item {
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp)) {
                             Text("Задолженность", style = MaterialTheme.typography.titleMedium)

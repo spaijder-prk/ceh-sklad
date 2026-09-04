@@ -1,0 +1,31 @@
+{
+  "provider": "1cfresh",
+  "application_url": "https://1cfresh.com/a/REPLACE/REPLACE",
+  "timezone": "Europe/Moscow",
+  "post_documents": false,
+  "resources": {
+    "products": "REPLACE_FROM_METADATA",
+    "warehouses": "REPLACE_FROM_METADATA",
+    "organizations": "REPLACE_FROM_METADATA",
+    "counterparties": "REPLACE_FROM_METADATA",
+    "transfer": "REPLACE_FROM_METADATA",
+    "sale": "REPLACE_FROM_METADATA",
+    "cash_receipt": "REPLACE_FROM_METADATA",
+    "stock_receipt": "REPLACE_FROM_METADATA",
+    "stock_writeoff": "REPLACE_FROM_METADATA"
+  },
+  "external_key_fields": {
+    "transfer": "REPLACE_FIELD_FROM_METADATA",
+    "sale": "REPLACE_FIELD_FROM_METADATA",
+    "cash_receipt": "REPLACE_FIELD_FROM_METADATA",
+    "stock_receipt": "REPLACE_FIELD_FROM_METADATA",
+    "stock_writeoff": "REPLACE_FIELD_FROM_METADATA"
+  },
+  "constants": {
+    "organization_ref": "",
+    "cashbox_ref": "",
+    "cash_flow_item_ref": "",
+    "retail_customer_ref": "",
+    "wholesale_customer_ref": ""
+  }
+}

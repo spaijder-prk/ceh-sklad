@@ -105,6 +105,58 @@ def test_list_create_and_post_document_use_standard_odata_contract():
     assert [request.method for request in requests] == ["GET", "POST", "POST"]
 
 
+def test_find_one_by_external_key_escapes_quotes_and_returns_single_match():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.params["$top"] == "2"
+        assert request.url.params["$filter"] == "Комментарий eq 'ceh-sklad:O''Brien'"
+        return httpx.Response(
+            200,
+            json={"value": [{"Ref_Key": "33333333-3333-3333-3333-333333333333"}]},
+        )
+
+    with FreshODataClient(
+        "https://1cfresh.example/a/unf/100",
+        "service",
+        "secret",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        found = client.find_one_by_text_field(
+            "Document_РасходнаяНакладная",
+            "Комментарий",
+            "ceh-sklad:O'Brien",
+        )
+
+    assert found is not None
+    assert found["Ref_Key"] == "33333333-3333-3333-3333-333333333333"
+
+
+def test_find_one_by_external_key_rejects_duplicates():
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            json={
+                "value": [
+                    {"Ref_Key": "33333333-3333-3333-3333-333333333333"},
+                    {"Ref_Key": "44444444-4444-4444-4444-444444444444"},
+                ]
+            },
+        )
+    )
+    with FreshODataClient(
+        "https://1cfresh.example/a/unf/100",
+        "service",
+        "secret",
+        transport=transport,
+    ) as client:
+        with pytest.raises(RuntimeError, match="Нарушена идемпотентность"):
+            client.find_one_by_text_field(
+                "Document_РасходнаяНакладная",
+                "Комментарий",
+                "ceh-sklad:stock_document:123",
+            )
+
+
 def test_resource_and_ref_key_are_validated_before_request():
     transport = httpx.MockTransport(lambda request: pytest.fail(f"Неожиданный запрос: {request.url}"))
     with FreshODataClient(

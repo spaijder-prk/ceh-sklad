@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from . import catalog_import, cli, fresh_probe, fresh_sync, location_import
+from . import catalog_import, cli, fresh_probe, fresh_sync, health, location_import
 from .remote_errors import guarded_remote_cli
 
 
@@ -27,3 +27,8 @@ def import_products_main() -> None:
 @guarded_remote_cli
 def import_locations_main() -> None:
     location_import.main()
+
+
+@guarded_remote_cli
+def health_main() -> None:
+    health.main()

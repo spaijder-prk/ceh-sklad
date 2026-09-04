@@ -27,7 +27,6 @@ REQUIRED_RESOURCES = (
     "stock_receipt",
     "stock_writeoff",
 )
-
 DOCUMENT_RESOURCES = (
     "transfer",
     "sale",
@@ -35,10 +34,14 @@ DOCUMENT_RESOURCES = (
     "stock_receipt",
     "stock_writeoff",
 )
-
 REQUIRED_CONSTANTS = (
     "retail_price_type_ref",
     "wholesale_price_type_ref",
+)
+REQUIRED_PRICE_FIELDS = (
+    "product_ref",
+    "price_type_ref",
+    "value",
 )
 
 
@@ -50,6 +53,7 @@ class TenantMapping:
     post_documents: bool
     resources: dict[str, str]
     external_key_fields: dict[str, str]
+    price_fields: dict[str, str]
     constants: dict[str, str]
 
     @classmethod
@@ -62,6 +66,7 @@ class TenantMapping:
             str(key): str(value).strip()
             for key, value in dict(data.get("external_key_fields", {})).items()
         }
+        price_fields = {str(key): str(value).strip() for key, value in dict(data.get("price_fields", {})).items()}
         constants = {str(key): str(value).strip() for key, value in dict(data.get("constants", {})).items()}
 
         if provider not in {"1cfresh", "other"}:
@@ -80,6 +85,9 @@ class TenantMapping:
             raise ValueError(
                 "Не заданы поля устойчивого внешнего ключа: " + ", ".join(missing_external_fields)
             )
+        missing_price_fields = [key for key in REQUIRED_PRICE_FIELDS if not price_fields.get(key)]
+        if missing_price_fields:
+            raise ValueError("Не заданы поля регистра цен УНФ: " + ", ".join(missing_price_fields))
         missing_constants = [key for key in REQUIRED_CONSTANTS if not constants.get(key)]
         if missing_constants:
             raise ValueError(
@@ -99,6 +107,7 @@ class TenantMapping:
             post_documents=bool(data.get("post_documents", False)),
             resources=resources,
             external_key_fields=external_key_fields,
+            price_fields=price_fields,
             constants=constants,
         )
 
@@ -124,14 +133,21 @@ class TenantMapping:
             properties = by_name[resource].properties
             if properties and field not in properties:
                 missing_fields.append(f"{alias}: {resource}.{field}")
+
+        price_resource = self.resources["prices"]
+        price_properties = by_name[price_resource].properties
+        if price_properties:
+            for alias in REQUIRED_PRICE_FIELDS:
+                field = self.price_fields[alias]
+                if field not in price_properties:
+                    missing_fields.append(f"prices: {price_resource}.{field}")
+
         if missing_fields:
             raise ValueError(
-                "В $metadata tenant отсутствуют поля устойчивого внешнего ключа: "
-                + ", ".join(missing_fields)
+                "В $metadata tenant отсутствуют настроенные поля: " + ", ".join(missing_fields)
             )
 
     def public_summary(self) -> dict[str, Any]:
-        """Несекретное описание для health/логов bridge."""
         return {
             "provider": self.provider,
             "application_url": self.application_url,

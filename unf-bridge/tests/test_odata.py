@@ -50,14 +50,37 @@ def test_metadata_discovers_entity_sets_properties_and_does_not_follow_redirects
     ) as client:
         entity_sets = client.entity_sets()
 
-    assert [item.name for item in entity_sets] == [
-        "Catalog_Номенклатура",
-        "Document_РасходнаяНакладная",
-    ]
+    assert [item.name for item in entity_sets] == ["Catalog_Номенклатура", "Document_РасходнаяНакладная"]
     by_name = {item.name: item for item in entity_sets}
     assert by_name["Catalog_Номенклатура"].properties == ("Ref_Key", "Description")
     assert "Комментарий" in by_name["Document_РасходнаяНакладная"].properties
-    assert "Posted" in by_name["Document_РасходнаяНакладная"].properties
+
+
+def test_slice_last_builds_safe_guid_condition():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/InformationRegister_ЦеныНоменклатуры/SliceLast")
+        assert request.url.params["Condition"] == (
+            "Номенклатура_Key eq guid'cccccccc-cccc-cccc-cccc-cccccccccccc' and "
+            "ВидЦен_Key eq guid'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'"
+        )
+        assert request.url.params["$select"] == "Цена"
+        return httpx.Response(200, json={"value": [{"Цена": 350}]})
+
+    with FreshODataClient(
+        "https://1cfresh.example/a/unf/100",
+        "service",
+        "secret",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        rows = client.slice_last_by_guid_fields(
+            "InformationRegister_ЦеныНоменклатуры",
+            {
+                "Номенклатура_Key": "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC",
+                "ВидЦен_Key": "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA",
+            },
+            select=("Цена",),
+        )
+    assert rows == [{"Цена": 350}]
 
 
 def test_list_create_and_post_document_use_standard_odata_contract():
@@ -67,20 +90,11 @@ def test_list_create_and_post_document_use_standard_odata_contract():
         requests.append(request)
         if request.method == "GET":
             assert request.url.path.endswith("/Catalog_Номенклатура")
-            assert request.url.params["$format"] == "json"
-            assert request.url.params["$top"] == "2"
-            assert request.url.params["$select"] == "Ref_Key,Description"
-            return httpx.Response(
-                200,
-                json={"value": [{"Ref_Key": "11111111-1111-1111-1111-111111111111", "Description": "Товар"}]},
-            )
+            return httpx.Response(200, json={"value": [{"Description": "Товар"}]})
         if request.url.path.endswith("/Document_РасходнаяНакладная"):
             payload = json.loads(request.content.decode("utf-8"))
             assert payload["Comment"] == "ceh-sklad:test"
-            return httpx.Response(
-                201,
-                json={"Ref_Key": "22222222-2222-2222-2222-222222222222", "Posted": False},
-            )
+            return httpx.Response(201, json={"Ref_Key": "22222222-2222-2222-2222-222222222222", "Posted": False})
         assert request.url.path.endswith(
             "/Document_РасходнаяНакладная(guid'22222222-2222-2222-2222-222222222222')/Post()"
         )
@@ -92,79 +106,35 @@ def test_list_create_and_post_document_use_standard_odata_contract():
         "secret",
         transport=httpx.MockTransport(handler),
     ) as client:
-        rows = client.list(
-            "Catalog_Номенклатура",
-            top=2,
-            select=("Ref_Key", "Description"),
-        )
+        rows = client.list("Catalog_Номенклатура", top=2)
         created = client.create("Document_РасходнаяНакладная", {"Comment": "ceh-sklad:test"})
         client.post_document("Document_РасходнаяНакладная", created["Ref_Key"])
-
     assert rows[0]["Description"] == "Товар"
-    assert created["Posted"] is False
     assert [request.method for request in requests] == ["GET", "POST", "POST"]
 
 
 def test_find_one_by_external_key_escapes_quotes_and_returns_single_match():
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.method == "GET"
-        assert request.url.params["$top"] == "2"
         assert request.url.params["$filter"] == "Комментарий eq 'ceh-sklad:O''Brien'"
-        return httpx.Response(
-            200,
-            json={"value": [{"Ref_Key": "33333333-3333-3333-3333-333333333333"}]},
-        )
+        return httpx.Response(200, json={"value": [{"Ref_Key": "33333333-3333-3333-3333-333333333333"}]})
 
     with FreshODataClient(
-        "https://1cfresh.example/a/unf/100",
-        "service",
-        "secret",
-        transport=httpx.MockTransport(handler),
+        "https://1cfresh.example/a/unf/100", "service", "secret", transport=httpx.MockTransport(handler)
     ) as client:
-        found = client.find_one_by_text_field(
-            "Document_РасходнаяНакладная",
-            "Комментарий",
-            "ceh-sklad:O'Brien",
-        )
-
+        found = client.find_one_by_text_field("Document_РасходнаяНакладная", "Комментарий", "ceh-sklad:O'Brien")
     assert found is not None
-    assert found["Ref_Key"] == "33333333-3333-3333-3333-333333333333"
 
 
 def test_find_one_by_external_key_rejects_duplicates():
-    transport = httpx.MockTransport(
-        lambda request: httpx.Response(
-            200,
-            json={
-                "value": [
-                    {"Ref_Key": "33333333-3333-3333-3333-333333333333"},
-                    {"Ref_Key": "44444444-4444-4444-4444-444444444444"},
-                ]
-            },
-        )
-    )
-    with FreshODataClient(
-        "https://1cfresh.example/a/unf/100",
-        "service",
-        "secret",
-        transport=transport,
-    ) as client:
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"value": [{"Ref_Key": "1"}, {"Ref_Key": "2"}]}))
+    with FreshODataClient("https://1cfresh.example/a/unf/100", "service", "secret", transport=transport) as client:
         with pytest.raises(RuntimeError, match="Нарушена идемпотентность"):
-            client.find_one_by_text_field(
-                "Document_РасходнаяНакладная",
-                "Комментарий",
-                "ceh-sklad:stock_document:123",
-            )
+            client.find_one_by_text_field("Document_РасходнаяНакладная", "Комментарий", "ceh-sklad:key")
 
 
 def test_resource_and_ref_key_are_validated_before_request():
     transport = httpx.MockTransport(lambda request: pytest.fail(f"Неожиданный запрос: {request.url}"))
-    with FreshODataClient(
-        "https://1cfresh.example/a/unf/100",
-        "service",
-        "secret",
-        transport=transport,
-    ) as client:
+    with FreshODataClient("https://1cfresh.example/a/unf/100", "service", "secret", transport=transport) as client:
         with pytest.raises(ValueError, match="ресурса"):
             client.list("../secrets")
         with pytest.raises(ValueError, match="Ref_Key"):

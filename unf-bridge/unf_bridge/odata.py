@@ -39,17 +39,11 @@ def _validate_guid(value: str) -> str:
 
 
 def _odata_string(value: str) -> str:
-    """Экранирует текстовый литерал OData без возможности подменить фильтр."""
     return "'" + value.replace("'", "''") + "'"
 
 
 class FreshODataClient:
-    """Низкоуровневый клиент стандартного OData интерфейса 1С:Фреш.
-
-    Клиент намеренно не знает имена объектов конкретной версии УНФ. Сначала bridge
-    читает `$metadata`, затем tenant-конфигурация сопоставляет найденные EntitySet и
-    их свойства с нужными документами и справочниками.
-    """
+    """Низкоуровневый клиент стандартного OData интерфейса 1С:Фреш."""
 
     def __init__(
         self,
@@ -158,13 +152,44 @@ class FreshODataClient:
             raise RuntimeError("OData вернул неожиданный формат списка")
         return [dict(row) for row in value]
 
+    def slice_last_by_guid_fields(
+        self,
+        resource: str,
+        filters: dict[str, str],
+        *,
+        select: tuple[str, ...] = (),
+    ) -> list[dict[str, Any]]:
+        """Читает SliceLast периодического регистра с безопасными GUID-условиями."""
+        resource = _validate_resource(resource)
+        if not filters:
+            raise ValueError("SliceLast требует хотя бы одно измерение")
+        conditions: list[str] = []
+        for field, value in filters.items():
+            field = _validate_resource(field)
+            guid = _validate_guid(value)
+            conditions.append(f"{field} eq guid'{guid}'")
+        params: dict[str, str] = {
+            "$format": "json",
+            "Condition": " and ".join(conditions),
+        }
+        if select:
+            for field in select:
+                _validate_resource(field)
+            params["$select"] = ",".join(select)
+        response = self._client.get(f"{resource}/SliceLast", params=params)
+        response.raise_for_status()
+        body = response.json()
+        value = body.get("value")
+        if not isinstance(value, list):
+            raise RuntimeError("OData SliceLast вернул неожиданный формат")
+        return [dict(row) for row in value]
+
     def find_one_by_text_field(
         self,
         resource: str,
         field: str,
         value: str,
     ) -> dict[str, Any] | None:
-        """Ищет объект по устойчивому текстовому ключу перед create/retry."""
         resource = _validate_resource(resource)
         field = _validate_resource(field)
         if not value:

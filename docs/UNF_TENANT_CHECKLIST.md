@@ -51,7 +51,7 @@ ceh-unf-fresh-probe --details --all
 
 ### Санитизированный metadata snapshot
 
-Bridge `0.8.2` умеет сохранить полный структурированный snapshot discovery без учетных данных:
+Bridge `0.8.2+` умеет сохранить полный структурированный snapshot discovery без учетных данных:
 
 ```bash
 ceh-unf-fresh-probe \
@@ -60,23 +60,29 @@ ceh-unf-fresh-probe \
   --snapshot /var/lib/ceh-unf/unf-metadata.json
 ```
 
-Snapshot содержит:
+Snapshot содержит URL приложения/OData base, полный список EntitySet, EDM-типы полей, `nullable`, `NavigationProperty` и связанные EntitySet/возможные табличные части. Логин, пароль и `Authorization` headers туда не записываются.
 
-- URL приложения и OData base;
-- полный список EntitySet;
-- EDM-типы полей и `nullable`;
-- `NavigationProperty`;
-- связанные EntitySet, которые могут быть табличными частями.
+Фактический production snapshot не следует коммитить в публичный репозиторий: он не содержит секретов авторизации, но раскрывает URL и структуру конкретного tenant.
 
-В snapshot **не записываются** логин, пароль или `Authorization` headers. При этом файл раскрывает структуру и URL конкретного tenant, поэтому фактический production snapshot не следует коммитить в публичный репозиторий. Его можно хранить как внутренний UAT/discovery artifact и использовать для ревью mapping без повторного доступа к 1С.
+### Offline-проверка mapping по snapshot
 
-После discovery заполните `unf-bridge/unf-tenant.example.json`, сохраните отдельной несекретной конфигурацией и повторите:
+После заполнения mapping его можно сверить со snapshot без сети и без credentials:
+
+```bash
+ceh-unf-metadata-validate \
+  --mapping /path/to/unf-tenant.json \
+  --snapshot /var/lib/ceh-unf/unf-metadata.json
+```
+
+Команда проверяет совпадение `application_url`, все настроенные EntitySet, поля устойчивых ключей, price paths, payload schemas/табличные части и EntitySet из `reference_checks`. `status=ready` означает, что mapping согласован со сохраненной структурой tenant; `status=blocked`/код `3` требует исправления конфигурации. Перед реальной записью живая повторная проверка `$metadata` всё равно обязательна.
+
+После первичного discovery заполните `unf-bridge/unf-tenant.example.json`, сохраните отдельной несекретной конфигурацией и повторите:
 
 ```bash
 ceh-unf-fresh-probe --mapping /path/to/unf-tenant.json
 ```
 
-Команда сверит EntitySet и поля устойчивых ключей с реальным `$metadata` до любой записи. Сервисные credentials в вывод не включаются.
+Команда сверит EntitySet и поля устойчивых ключей с текущим реальным `$metadata` до любой записи. Сервисные credentials в вывод не включаются.
 
 Нужно определить фактические EntitySet/реквизиты для:
 

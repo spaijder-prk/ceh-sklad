@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .odata import FreshODataClient, ODataEntitySet
+from .odata import FreshODataClient, ODataEntitySet, ODataField, ODataNavigation
 from .tenant_config import TenantMapping
 
 
@@ -149,6 +149,80 @@ def write_metadata_snapshot(
         + "\n",
         encoding="utf-8",
     )
+
+
+def load_metadata_snapshot(path: Path) -> tuple[str, list[ODataEntitySet]]:
+    """Загружает snapshot обратно в модель `$metadata` для offline-валидации mapping."""
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("Metadata snapshot должен быть JSON-объектом")
+    if raw.get("schema_version") != SNAPSHOT_SCHEMA_VERSION:
+        raise ValueError(
+            f"Неподдерживаемая версия metadata snapshot: {raw.get('schema_version')!r}"
+        )
+
+    application_url = str(raw.get("application_url", "")).strip().rstrip("/")
+    if not application_url:
+        raise ValueError("Metadata snapshot не содержит application_url")
+
+    raw_sets = raw.get("entity_sets")
+    if not isinstance(raw_sets, list):
+        raise ValueError("Metadata snapshot не содержит список entity_sets")
+
+    entity_sets: list[ODataEntitySet] = []
+    for index, raw_item in enumerate(raw_sets):
+        if not isinstance(raw_item, dict):
+            raise ValueError(f"entity_sets[{index}] должен быть JSON-объектом")
+        name = str(raw_item.get("name", "")).strip()
+        entity_type = str(raw_item.get("entity_type", "")).strip()
+        if not name or not entity_type:
+            raise ValueError(f"entity_sets[{index}] не содержит name/entity_type")
+
+        raw_fields = raw_item.get("fields", [])
+        raw_navigation = raw_item.get("navigation", [])
+        if not isinstance(raw_fields, list) or not isinstance(raw_navigation, list):
+            raise ValueError(f"entity_sets[{index}] содержит некорректные fields/navigation")
+
+        fields: list[ODataField] = []
+        for field_index, raw_field in enumerate(raw_fields):
+            if not isinstance(raw_field, dict):
+                raise ValueError(
+                    f"entity_sets[{index}].fields[{field_index}] должен быть JSON-объектом"
+                )
+            field_name = str(raw_field.get("name", "")).strip()
+            edm_type = str(raw_field.get("edm_type", "")).strip()
+            nullable = raw_field.get("nullable")
+            if not field_name or not edm_type or not isinstance(nullable, bool):
+                raise ValueError(
+                    f"entity_sets[{index}].fields[{field_index}] содержит некорректные данные"
+                )
+            fields.append(ODataField(field_name, edm_type, nullable))
+
+        navigation: list[ODataNavigation] = []
+        for navigation_index, raw_nav in enumerate(raw_navigation):
+            if not isinstance(raw_nav, dict):
+                raise ValueError(
+                    f"entity_sets[{index}].navigation[{navigation_index}] должен быть JSON-объектом"
+                )
+            nav_name = str(raw_nav.get("name", "")).strip()
+            target_type = str(raw_nav.get("target_type", "")).strip()
+            if not nav_name or not target_type:
+                raise ValueError(
+                    f"entity_sets[{index}].navigation[{navigation_index}] содержит некорректные данные"
+                )
+            navigation.append(ODataNavigation(nav_name, target_type))
+
+        entity_sets.append(
+            ODataEntitySet(
+                name=name,
+                entity_type=entity_type,
+                properties=tuple(field.name for field in fields),
+                fields=tuple(fields),
+                navigation=tuple(navigation),
+            )
+        )
+
+    return application_url, sorted(entity_sets, key=lambda item: item.name.casefold())
 
 
 def main() -> None:

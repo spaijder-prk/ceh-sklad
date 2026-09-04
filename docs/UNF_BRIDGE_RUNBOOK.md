@@ -30,7 +30,7 @@ ceh-unf-fresh-probe \
 
 Snapshot не содержит логин, пароль или Authorization headers, но раскрывает URL и структуру конкретного tenant. Не коммитьте production snapshot в публичный репозиторий.
 
-## 2. Заполнить mapping
+## 2. Заполнить и проверить mapping offline
 
 Скопируйте `unf-bridge/unf-tenant.example.json` во внешний конфигурационный каталог и замените только значения `REPLACE_*` данными фактического tenant или сохраненного metadata snapshot.
 
@@ -45,6 +45,30 @@ Snapshot не содержит логин, пароль или Authorization hea
 - `reference_checks` для tenant-specific справочников, которые должны существовать до запуска записи.
 
 Пароли/токены в mapping не помещаются.
+
+До повторного доступа к 1С mapping можно полностью сверить со snapshot локально:
+
+```bash
+ceh-unf-metadata-validate \
+  --mapping /etc/ceh-sklad/unf-tenant.json \
+  --snapshot /var/lib/ceh-unf/unf-metadata.json
+```
+
+Команда не использует сеть или credentials. Она проверяет совпадение `application_url`, наличие всех EntitySet, полей устойчивых ключей, price paths, payload schemas/табличных частей и EntitySet из `reference_checks`. Успех возвращает JSON `status=ready`; ошибка — `status=blocked` и код `3`.
+
+Отдельно выполните статический бизнес-аудит mapping:
+
+```bash
+ceh-unf-tenant-audit --mapping /etc/ceh-sklad/unf-tenant.json
+```
+
+После offline-проверок повторная живая сверка остается обязательной перед UAT:
+
+```bash
+ceh-unf-fresh-probe \
+  --url 'https://1cfresh.com/a/...' \
+  --mapping /etc/ceh-sklad/unf-tenant.json
+```
 
 ## 3. Dry-run
 
@@ -99,7 +123,7 @@ ceh-unf-fresh-health --mapping /etc/ceh-sklad/unf-tenant.json --limit 100
 
 - `0` — успешно;
 - `2` — постоянная/ручная ошибка: права, неверный mapping, 4xx уровня 401/403/409/422 и т.п.;
-- `3` — health/outbox деградирован из-за заблокированных операций/справочников;
+- `3` — offline audit/metadata validation или health/outbox заблокирован;
 - `75` — временная ошибка: сеть, 408/425/429/5xx; при наличии `Retry-After` значение выводится в stderr.
 
 ## 8. Production systemd
@@ -146,4 +170,4 @@ systemctl status ceh-unf-health.service ceh-unf-sync.service
 journalctl -u 'ceh-unf-*' --since today
 ```
 
-Код `75` оставляет запуск неуспешным и хорошо виден мониторингу; следующий timer выполняет повтор. Код `2` требует исправления прав/конфигурации, код `3` — разбора blocked outbox/reference objects. Секреты не должны попадать ни в unit-файлы, ни в journal.
+Код `75` оставляет запуск неуспешным и хорошо виден мониторингу; следующий timer выполняет повтор. Код `2` требует исправления прав/конфигурации, код `3` — разбора blocked mapping/outbox/reference objects. Секреты не должны попадать ни в unit-файлы, ни в journal.

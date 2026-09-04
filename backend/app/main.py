@@ -13,6 +13,7 @@ from .bootstrap import ensure_bootstrap_admin
 from .config import settings
 from .database import SessionFactory, engine
 from .integration_1c import router as integration_1c_router
+from .integration_archive_check import router as integration_archive_check_router
 from .integration_export_api import router as integration_export_router
 from .login_retry_after import LoginRetryAfterMiddleware
 from .reporting import router as reporting_router
@@ -28,7 +29,7 @@ async def lifespan(_: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title=settings.app_name, version="0.14.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="0.15.0", lifespan=lifespan)
 app.middleware("http")(audit_mutations)
 app.add_middleware(
     CORSMiddleware,
@@ -43,6 +44,7 @@ app.include_router(account_security_router)
 app.include_router(reporting_router)
 app.include_router(system_status_router)
 app.include_router(integration_1c_router)
+app.include_router(integration_archive_check_router)
 app.include_router(integration_export_router)
 app.include_router(unf_cloud_router)
 app.include_router(admin_users_router)

@@ -47,6 +47,14 @@ def _validate_resource(value: str) -> str:
     return value
 
 
+def validate_field_path(value: str) -> str:
+    """Разрешает только безопасный путь из OData-идентификаторов `segment/segment`."""
+    parts = value.split("/")
+    if not value or not parts or any(not part or not _RESOURCE_RE.fullmatch(part) for part in parts):
+        raise ValueError("Некорректный путь OData-поля")
+    return value
+
+
 def _validate_guid(value: str) -> str:
     if not _GUID_RE.fullmatch(value):
         raise ValueError("Некорректный Ref_Key OData")
@@ -172,7 +180,7 @@ class FreshODataClient:
         params: dict[str, str | int] = {"$format": "json", "$top": max(1, min(top, 100))}
         if select:
             for field in select:
-                _validate_resource(field)
+                validate_field_path(field)
             params["$select"] = ",".join(select)
         if filter_expression:
             params["$filter"] = filter_expression
@@ -197,7 +205,7 @@ class FreshODataClient:
             raise ValueError("SliceLast требует хотя бы одно измерение")
         conditions: list[str] = []
         for field, value in filters.items():
-            field = _validate_resource(field)
+            field = validate_field_path(field)
             guid = _validate_guid(value)
             conditions.append(f"{field} eq guid'{guid}'")
         params: dict[str, str] = {
@@ -206,7 +214,7 @@ class FreshODataClient:
         }
         if select:
             for field in select:
-                _validate_resource(field)
+                validate_field_path(field)
             params["$select"] = ",".join(select)
         response = self._client.get(f"{resource}/SliceLast", params=params)
         response.raise_for_status()

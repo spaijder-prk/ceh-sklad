@@ -7,12 +7,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from .odata import ODataEntitySet
+from .odata import ODataEntitySet, validate_field_path
 
 
 _GUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
+_RESOURCE_RE = re.compile(r"^[A-Za-zА-Яа-яЁё0-9_]+$")
 
 REQUIRED_RESOURCES = (
     "products",
@@ -43,6 +44,11 @@ REQUIRED_PRICE_FIELDS = (
     "price_type_ref",
     "value",
 )
+
+
+def _metadata_has_path(entity: ODataEntitySet, path: str) -> bool:
+    root = path.split("/", 1)[0]
+    return root in entity.properties or root in {item.name for item in entity.navigation}
 
 
 @dataclass(frozen=True)
@@ -85,9 +91,17 @@ class TenantMapping:
             raise ValueError(
                 "Не заданы поля устойчивого внешнего ключа: " + ", ".join(missing_external_fields)
             )
+        for alias, field in external_key_fields.items():
+            if alias in DOCUMENT_RESOURCES and (not _RESOURCE_RE.fullmatch(field) or "/" in field):
+                raise ValueError(f"Поле устойчивого ключа {alias} должно быть прямым OData-полем")
+
         missing_price_fields = [key for key in REQUIRED_PRICE_FIELDS if not price_fields.get(key)]
         if missing_price_fields:
             raise ValueError("Не заданы поля регистра цен УНФ: " + ", ".join(missing_price_fields))
+        for alias, field in price_fields.items():
+            if alias in REQUIRED_PRICE_FIELDS:
+                validate_field_path(field)
+
         missing_constants = [key for key in REQUIRED_CONSTANTS if not constants.get(key)]
         if missing_constants:
             raise ValueError(
@@ -135,11 +149,11 @@ class TenantMapping:
                 missing_fields.append(f"{alias}: {resource}.{field}")
 
         price_resource = self.resources["prices"]
-        price_properties = by_name[price_resource].properties
-        if price_properties:
+        price_entity = by_name[price_resource]
+        if price_entity.properties or price_entity.navigation:
             for alias in REQUIRED_PRICE_FIELDS:
                 field = self.price_fields[alias]
-                if field not in price_properties:
+                if not _metadata_has_path(price_entity, field):
                     missing_fields.append(f"prices: {price_resource}.{field}")
 
         if missing_fields:

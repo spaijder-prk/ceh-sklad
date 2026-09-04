@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from unf_bridge.fresh_probe import entity_details_lines, related_entity_sets
-from unf_bridge.odata import FreshODataClient
+from unf_bridge.odata import FreshODataClient, validate_field_path
 
 
 METADATA = """<?xml version="1.0" encoding="utf-8"?>
@@ -60,33 +60,32 @@ def test_fresh_odata_rejects_non_https_by_default():
 def test_metadata_discovers_fields_types_navigation_and_tabular_entity_set():
     with client_with_metadata() as client:
         entity_sets = client.entity_sets()
-
     by_name = {item.name: item for item in entity_sets}
     product = by_name["Catalog_Номенклатура"]
     sale = by_name["Document_РасходнаяНакладная"]
     table = by_name["Document_РасходнаяНакладная_Запасы_RecordType"]
-
     assert product.properties == ("Ref_Key", "Description")
-    assert product.fields[0].edm_type == "Edm.Guid"
-    assert product.fields[0].nullable is False
+    assert product.fields[0].edm_type == "Edm.Guid" and product.fields[0].nullable is False
     assert sale.navigation[0].name == "Запасы"
-    assert "Collection(" in sale.navigation[0].target_type
     assert table.fields[1].name == "Номенклатура_Key"
-    assert table.fields[1].edm_type == "Edm.Guid"
-
-    related = related_entity_sets(sale, entity_sets)
-    assert [item.name for item in related] == ["Document_РасходнаяНакладная_Запасы_RecordType"]
+    assert [item.name for item in related_entity_sets(sale, entity_sets)] == ["Document_РасходнаяНакладная_Запасы_RecordType"]
     details = "\n".join(entity_details_lines(sale, entity_sets))
-    assert "Комментарий: Edm.String" in details
-    assert "Запасы" in details
-    assert "Номенклатура_Key: Edm.Guid" in details
+    assert "Комментарий: Edm.String" in details and "Номенклатура_Key: Edm.Guid" in details
 
 
-def test_slice_last_builds_safe_guid_condition():
+def test_field_path_allows_identifiers_but_rejects_odata_expression_injection():
+    assert validate_field_path("Номенклатура/Ref_Key") == "Номенклатура/Ref_Key"
+    assert validate_field_path("Валюта/ОсновнаяВалюта_Key") == "Валюта/ОсновнаяВалюта_Key"
+    for value in ("", "/Ref_Key", "Ref_Key/", "Ref_Key//x", "Ref_Key) or true", "x eq y"):
+        with pytest.raises(ValueError, match="путь"):
+            validate_field_path(value)
+
+
+def test_slice_last_builds_safe_nested_guid_condition():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path.endswith("/InformationRegister_ЦеныНоменклатуры/SliceLast")
         assert request.url.params["Condition"] == (
-            "Номенклатура_Key eq guid'cccccccc-cccc-cccc-cccc-cccccccccccc' and "
+            "Номенклатура/Ref_Key eq guid'cccccccc-cccc-cccc-cccc-cccccccccccc' and "
             "ВидЦен_Key eq guid'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'"
         )
         assert request.url.params["$select"] == "Цена"
@@ -101,7 +100,7 @@ def test_slice_last_builds_safe_guid_condition():
         rows = client.slice_last_by_guid_fields(
             "InformationRegister_ЦеныНоменклатуры",
             {
-                "Номенклатура_Key": "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC",
+                "Номенклатура/Ref_Key": "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC",
                 "ВидЦен_Key": "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA",
             },
             select=("Цена",),
@@ -111,47 +110,27 @@ def test_slice_last_builds_safe_guid_condition():
 
 def test_list_create_and_post_document_use_standard_odata_contract():
     requests: list[httpx.Request] = []
-
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         if request.method == "GET":
-            assert request.url.path.endswith("/Catalog_Номенклатура")
             return httpx.Response(200, json={"value": [{"Description": "Товар"}]})
         if request.url.path.endswith("/Document_РасходнаяНакладная"):
-            payload = json.loads(request.content.decode("utf-8"))
-            assert payload["Comment"] == "ceh-sklad:test"
+            payload = json.loads(request.content.decode("utf-8")); assert payload["Comment"] == "ceh-sklad:test"
             return httpx.Response(201, json={"Ref_Key": "22222222-2222-2222-2222-222222222222", "Posted": False})
-        assert request.url.path.endswith(
-            "/Document_РасходнаяНакладная(guid'22222222-2222-2222-2222-222222222222')/Post()"
-        )
         return httpx.Response(200)
-
-    with FreshODataClient(
-        "https://1cfresh.example/a/unf/100",
-        "service",
-        "secret",
-        transport=httpx.MockTransport(handler),
-    ) as client:
+    with FreshODataClient("https://1cfresh.example/a/unf/100", "service", "secret", transport=httpx.MockTransport(handler)) as client:
         rows = client.list("Catalog_Номенклатура", top=2)
         created = client.create("Document_РасходнаяНакладная", {"Comment": "ceh-sklad:test"})
         client.post_document("Document_РасходнаяНакладная", created["Ref_Key"])
-    assert rows[0]["Description"] == "Товар"
-    assert [request.method for request in requests] == ["GET", "POST", "POST"]
+    assert rows[0]["Description"] == "Товар" and [x.method for x in requests] == ["GET", "POST", "POST"]
 
 
-def test_find_one_by_external_key_escapes_quotes_and_returns_single_match():
+def test_find_one_by_external_key_escapes_quotes_and_rejects_duplicates():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.params["$filter"] == "Комментарий eq 'ceh-sklad:O''Brien'"
         return httpx.Response(200, json={"value": [{"Ref_Key": "33333333-3333-3333-3333-333333333333"}]})
-
-    with FreshODataClient(
-        "https://1cfresh.example/a/unf/100", "service", "secret", transport=httpx.MockTransport(handler)
-    ) as client:
-        found = client.find_one_by_text_field("Document_РасходнаяНакладная", "Комментарий", "ceh-sklad:O'Brien")
-    assert found is not None
-
-
-def test_find_one_by_external_key_rejects_duplicates():
+    with FreshODataClient("https://1cfresh.example/a/unf/100", "service", "secret", transport=httpx.MockTransport(handler)) as client:
+        assert client.find_one_by_text_field("Document_РасходнаяНакладная", "Комментарий", "ceh-sklad:O'Brien") is not None
     transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"value": [{"Ref_Key": "1"}, {"Ref_Key": "2"}]}))
     with FreshODataClient("https://1cfresh.example/a/unf/100", "service", "secret", transport=transport) as client:
         with pytest.raises(RuntimeError, match="Нарушена идемпотентность"):

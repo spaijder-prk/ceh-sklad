@@ -5,6 +5,7 @@ import json
 import httpx
 import pytest
 
+from unf_bridge.fresh_probe import entity_details_lines, related_entity_sets
 from unf_bridge.odata import FreshODataClient
 
 
@@ -19,11 +20,18 @@ METADATA = """<?xml version="1.0" encoding="utf-8"?>
       <EntityType Name="Document_РасходнаяНакладная">
         <Property Name="Ref_Key" Type="Edm.Guid" Nullable="false" />
         <Property Name="Комментарий" Type="Edm.String" />
-        <Property Name="Posted" Type="Edm.Boolean" />
+        <Property Name="Posted" Type="Edm.Boolean" Nullable="false" />
+        <NavigationProperty Name="Запасы" Type="Collection(StandardODATA.Document_РасходнаяНакладная_Запасы_RowType)" />
+      </EntityType>
+      <EntityType Name="Document_РасходнаяНакладная_Запасы_RecordType">
+        <Property Name="LineNumber" Type="Edm.Int32" Nullable="false" />
+        <Property Name="Номенклатура_Key" Type="Edm.Guid" Nullable="false" />
+        <Property Name="Количество" Type="Edm.Decimal" Nullable="false" />
       </EntityType>
       <EntityContainer Name="Container">
         <EntitySet Name="Catalog_Номенклатура" EntityType="StandardODATA.Catalog_Номенклатура" />
         <EntitySet Name="Document_РасходнаяНакладная" EntityType="StandardODATA.Document_РасходнаяНакладная" />
+        <EntitySet Name="Document_РасходнаяНакладная_Запасы_RecordType" EntityType="StandardODATA.Document_РасходнаяНакладная_Запасы_RecordType" />
       </EntityContainer>
     </Schema>
   </edmx:DataServices>
@@ -31,29 +39,47 @@ METADATA = """<?xml version="1.0" encoding="utf-8"?>
 """
 
 
+def client_with_metadata():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/odata/standard.odata/$metadata")
+        assert request.headers["authorization"].startswith("Basic ")
+        return httpx.Response(200, text=METADATA, headers={"Content-Type": "application/xml"})
+    return FreshODataClient(
+        "https://1cfresh.example/a/unf/100",
+        "service",
+        "secret",
+        transport=httpx.MockTransport(handler),
+    )
+
+
 def test_fresh_odata_rejects_non_https_by_default():
     with pytest.raises(ValueError, match="HTTPS"):
         FreshODataClient("http://example.invalid/a/unf/1", "service", "secret")
 
 
-def test_metadata_discovers_entity_sets_properties_and_does_not_follow_redirects():
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path.endswith("/odata/standard.odata/$metadata")
-        assert request.headers["authorization"].startswith("Basic ")
-        return httpx.Response(200, text=METADATA, headers={"Content-Type": "application/xml"})
-
-    with FreshODataClient(
-        "https://1cfresh.example/a/unf/100",
-        "service",
-        "secret",
-        transport=httpx.MockTransport(handler),
-    ) as client:
+def test_metadata_discovers_fields_types_navigation_and_tabular_entity_set():
+    with client_with_metadata() as client:
         entity_sets = client.entity_sets()
 
-    assert [item.name for item in entity_sets] == ["Catalog_Номенклатура", "Document_РасходнаяНакладная"]
     by_name = {item.name: item for item in entity_sets}
-    assert by_name["Catalog_Номенклатура"].properties == ("Ref_Key", "Description")
-    assert "Комментарий" in by_name["Document_РасходнаяНакладная"].properties
+    product = by_name["Catalog_Номенклатура"]
+    sale = by_name["Document_РасходнаяНакладная"]
+    table = by_name["Document_РасходнаяНакладная_Запасы_RecordType"]
+
+    assert product.properties == ("Ref_Key", "Description")
+    assert product.fields[0].edm_type == "Edm.Guid"
+    assert product.fields[0].nullable is False
+    assert sale.navigation[0].name == "Запасы"
+    assert "Collection(" in sale.navigation[0].target_type
+    assert table.fields[1].name == "Номенклатура_Key"
+    assert table.fields[1].edm_type == "Edm.Guid"
+
+    related = related_entity_sets(sale, entity_sets)
+    assert [item.name for item in related] == ["Document_РасходнаяНакладная_Запасы_RecordType"]
+    details = "\n".join(entity_details_lines(sale, entity_sets))
+    assert "Комментарий: Edm.String" in details
+    assert "Запасы" in details
+    assert "Номенклатура_Key: Edm.Guid" in details
 
 
 def test_slice_last_builds_safe_guid_condition():

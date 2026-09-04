@@ -16,10 +16,25 @@ _GUID_RE = re.compile(
 
 
 @dataclass(frozen=True)
+class ODataField:
+    name: str
+    edm_type: str
+    nullable: bool = True
+
+
+@dataclass(frozen=True)
+class ODataNavigation:
+    name: str
+    target_type: str
+
+
+@dataclass(frozen=True)
 class ODataEntitySet:
     name: str
     entity_type: str
     properties: tuple[str, ...] = ()
+    fields: tuple[ODataField, ...] = ()
+    navigation: tuple[ODataNavigation, ...] = ()
 
 
 def _local_name(tag: str) -> str:
@@ -91,7 +106,8 @@ class FreshODataClient:
     def entity_sets(self) -> list[ODataEntitySet]:
         raw = self.metadata()
         root = ElementTree.fromstring(raw)
-        properties_by_type: dict[str, tuple[str, ...]] = {}
+        fields_by_type: dict[str, tuple[ODataField, ...]] = {}
+        navigation_by_type: dict[str, tuple[ODataNavigation, ...]] = {}
 
         for schema in root.iter():
             if _local_name(schema.tag) != "Schema":
@@ -103,14 +119,27 @@ class FreshODataClient:
                 type_name = entity_type.attrib.get("Name")
                 if not type_name:
                     continue
-                properties = tuple(
-                    child.attrib["Name"]
+                fields = tuple(
+                    ODataField(
+                        name=child.attrib["Name"],
+                        edm_type=child.attrib.get("Type", "unknown"),
+                        nullable=child.attrib.get("Nullable", "true").lower() != "false",
+                    )
                     for child in entity_type
                     if _local_name(child.tag) == "Property" and child.attrib.get("Name")
                 )
-                properties_by_type[type_name] = properties
-                if namespace:
-                    properties_by_type[f"{namespace}.{type_name}"] = properties
+                navigation = tuple(
+                    ODataNavigation(
+                        name=child.attrib["Name"],
+                        target_type=child.attrib.get("Type", "unknown"),
+                    )
+                    for child in entity_type
+                    if _local_name(child.tag) == "NavigationProperty" and child.attrib.get("Name")
+                )
+                aliases = (type_name, f"{namespace}.{type_name}") if namespace else (type_name,)
+                for alias in aliases:
+                    fields_by_type[alias] = fields
+                    navigation_by_type[alias] = navigation
 
         result: list[ODataEntitySet] = []
         for element in root.iter():
@@ -119,11 +148,14 @@ class FreshODataClient:
             name = element.attrib.get("Name")
             entity_type = element.attrib.get("EntityType")
             if name and entity_type:
+                fields = fields_by_type.get(entity_type, ())
                 result.append(
                     ODataEntitySet(
                         name=name,
                         entity_type=entity_type,
-                        properties=properties_by_type.get(entity_type, ()),
+                        properties=tuple(field.name for field in fields),
+                        fields=fields,
+                        navigation=navigation_by_type.get(entity_type, ()),
                     )
                 )
         return sorted(result, key=lambda item: item.name.casefold())

@@ -4,12 +4,14 @@ import argparse
 import os
 from pathlib import Path
 
-from .odata import FreshODataClient
+from .odata import FreshODataClient, ODataEntitySet
 from .tenant_config import TenantMapping
 
 
 DEFAULT_HINTS = (
     "Номенклат",
+    "ВидЦен",
+    "Цен",
     "Склад",
     "Перемещ",
     "Расход",
@@ -43,11 +45,47 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--all", action="store_true", help="Показать все EntitySet")
     parser.add_argument(
+        "--details",
+        action="store_true",
+        help="Показать поля, EDM-типы, nullable и связанные EntitySet/табличные части",
+    )
+    parser.add_argument(
         "--allow-http",
         action="store_true",
         help="Разрешить HTTP только для локального тестового стенда",
     )
     return parser.parse_args()
+
+
+def related_entity_sets(item: ODataEntitySet, entity_sets: list[ODataEntitySet]) -> list[ODataEntitySet]:
+    prefix = f"{item.name}_"
+    return [candidate for candidate in entity_sets if candidate.name.startswith(prefix)]
+
+
+def entity_details_lines(item: ODataEntitySet, entity_sets: list[ODataEntitySet]) -> list[str]:
+    lines: list[str] = []
+    if item.fields:
+        lines.append("  Поля:")
+        for field in item.fields:
+            marker = "nullable" if field.nullable else "required"
+            lines.append(f"    {field.name}: {field.edm_type} [{marker}]")
+    elif item.properties:
+        lines.append("  Поля: " + ", ".join(item.properties))
+
+    if item.navigation:
+        lines.append("  NavigationProperty:")
+        for navigation in item.navigation:
+            lines.append(f"    {navigation.name}: {navigation.target_type}")
+
+    related = related_entity_sets(item, entity_sets)
+    if related:
+        lines.append("  Связанные EntitySet / возможные табличные части:")
+        for candidate in related:
+            lines.append(f"    {candidate.name} -> {candidate.entity_type}")
+            for field in candidate.fields:
+                marker = "nullable" if field.nullable else "required"
+                lines.append(f"      {field.name}: {field.edm_type} [{marker}]")
+    return lines
 
 
 def main() -> None:
@@ -93,6 +131,9 @@ def main() -> None:
         return
     for item in selected:
         print(f"{item.name} -> {item.entity_type}")
+        if args.details:
+            for line in entity_details_lines(item, entity_sets):
+                print(line)
 
 
 if __name__ == "__main__":

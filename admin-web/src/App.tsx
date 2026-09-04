@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { responseErrorMessage } from './apiErrors'
 
 type Amount = number | string
 
@@ -61,8 +62,6 @@ type IntegrationLog = {
   created_at: string
 }
 
-type ApiError = { detail?: string }
-
 const API = 'http://localhost:8000/api/v1'
 
 const stockKindLabel: Record<string, string> = {
@@ -112,16 +111,7 @@ export default function App() {
       signOut()
       throw new Error('Сессия завершена')
     }
-    if (!response.ok) {
-      let message = `HTTP ${response.status}`
-      try {
-        const body = await response.json() as ApiError
-        if (body.detail) message = body.detail
-      } catch {
-        // Сервер мог вернуть ответ без JSON.
-      }
-      throw new Error(message)
-    }
+    if (!response.ok) throw new Error(await responseErrorMessage(response))
     return response.json() as Promise<T>
   }
 
@@ -134,7 +124,10 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ login, password }),
       })
-      if (!response.ok) throw new Error('Неверный логин или пароль')
+      if (!response.ok) {
+        const fallback = response.status === 401 ? 'Неверный логин или пароль' : undefined
+        throw new Error(await responseErrorMessage(response, fallback))
+      }
       const data = await response.json() as { access_token: string }
       localStorage.setItem('ceh-token', data.access_token)
       setToken(data.access_token)

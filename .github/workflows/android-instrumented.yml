@@ -74,14 +74,13 @@ jobs:
           profile: pixel_6
           disable-animations: true
           script: |
-            set +e
+            rm -f "$GITHUB_WORKSPACE/android-smoke-failed"
             adb logcat -c || true
-            gradle -p android :app:connectedDebugAndroidTest --stacktrace
-            STATUS=$?
+            gradle -p android :app:connectedDebugAndroidTest --stacktrace || touch "$GITHUB_WORKSPACE/android-smoke-failed"
             adb logcat -d > "$GITHUB_WORKSPACE/android-smoke-logcat.txt" || true
             adb exec-out screencap -p > "$GITHUB_WORKSPACE/android-smoke-final.png" || true
             adb shell dumpsys package ru.ceh.sklad > "$GITHUB_WORKSPACE/android-smoke-package.txt" || true
-            exit "$STATUS"
+            test ! -f "$GITHUB_WORKSPACE/android-smoke-failed"
       - name: Сохранить диагностику smoke-теста
         if: ${{ always() }}
         uses: actions/upload-artifact@v4

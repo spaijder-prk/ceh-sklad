@@ -1,0 +1,12 @@
+[Unit]
+Description=Периодический импорт allow-list складов из 1С:УНФ
+
+[Timer]
+OnBootSec=6min
+OnUnitActiveSec=1h
+AccuracySec=5min
+Persistent=true
+Unit=ceh-unf-import-locations.service
+
+[Install]
+WantedBy=timers.target

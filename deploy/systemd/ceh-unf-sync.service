@@ -1,0 +1,24 @@
+[Unit]
+Description=Экспорт outbox ceh-sklad в 1С:УНФ
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ceh-unf
+Group=ceh-unf
+EnvironmentFile=/etc/ceh-sklad/unf-bridge.env
+StateDirectory=ceh-unf
+ExecStart=/usr/bin/flock -n /var/lib/ceh-unf/bridge.lock /opt/ceh-sklad-unf/bin/ceh-unf-fresh-sync --mapping /etc/ceh-sklad/unf-tenant.json --limit 50 --execute
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true
+StandardOutput=journal
+StandardError=journal

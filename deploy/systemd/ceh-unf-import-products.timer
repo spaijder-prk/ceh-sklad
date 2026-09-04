@@ -1,0 +1,12 @@
+[Unit]
+Description=Периодический импорт номенклатуры и цен из 1С:УНФ
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Persistent=true
+Unit=ceh-unf-import-products.service
+
+[Install]
+WantedBy=timers.target

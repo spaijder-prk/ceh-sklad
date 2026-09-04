@@ -1,0 +1,12 @@
+[Unit]
+Description=Периодическая health-проверка bridge 1С:УНФ
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=ceh-unf-health.service
+
+[Install]
+WantedBy=timers.target

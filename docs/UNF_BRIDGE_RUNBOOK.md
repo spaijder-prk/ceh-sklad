@@ -80,3 +80,66 @@ Bridge сначала ищет документ по детерминирова�
 Если команда завершилась ошибкой после возможной записи в УНФ, **не создавайте документ вручную и не меняйте external key**. Повторите ту же операцию: find-before-create должен найти существующий документ и продолжить confirm без дубля.
 
 При `BLOCKED` запись этой операции не выполняется. Код возврата 3 означает, что в outbox остались заблокированные элементы и требуется исправить mapping/справочники.
+
+## 7. Read-only health
+
+Для мониторинга используется отдельная команда, которая не вызывает create/Post/confirm:
+
+```bash
+ceh-unf-fresh-health --mapping /etc/ceh-sklad/unf-tenant.json --limit 100
+```
+
+Успешный stdout — одна JSON-строка с `status`, версией контракта, количеством опубликованных EntitySet, ready/blocked outbox и числом планируемых документов. `status=degraded` означает наличие заблокированных outbox элементов и завершает команду кодом 3.
+
+Коды процесса bridge:
+
+- `0` — успешно;
+- `2` — постоянная/ручная ошибка: права, неверный mapping, 4xx уровня 401/403/409/422 и т.п.;
+- `3` — health/outbox деградирован из-за заблокированных операций;
+- `75` — временная ошибка: сеть, 408/425/429/5xx; при наличии `Retry-After` значение выводится в stderr.
+
+## 8. Production systemd
+
+Примеры unit/timer находятся в `deploy/systemd/`. Они используют одного непривилегированного пользователя `ceh-unf`, общий `flock` и системный journal. Параллельный импорт и экспорт одной базы не запускаются.
+
+Установите bridge, например, в отдельное virtualenv `/opt/ceh-sklad-unf`, создайте системного пользователя и внешние конфиги:
+
+```bash
+sudo useradd --system --home /var/lib/ceh-unf --shell /usr/sbin/nologin ceh-unf
+sudo install -d -m 0750 -o root -g ceh-unf /etc/ceh-sklad
+sudo install -m 0640 -o root -g ceh-unf unf-tenant.json /etc/ceh-sklad/unf-tenant.json
+sudo install -m 0640 -o root -g ceh-unf unf-bridge.env /etc/ceh-sklad/unf-bridge.env
+```
+
+`/etc/ceh-sklad/unf-bridge.env` содержит только секреты/URL и не коммитится:
+
+```text
+CEH_API_URL=https://sklad.example.ru
+CEH_1C_KEY=...
+UNF_FRESH_LOGIN=...
+UNF_FRESH_PASSWORD=...
+```
+
+Скопируйте unit-файлы и включите timers:
+
+```bash
+sudo cp deploy/systemd/ceh-unf-* /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now \
+  ceh-unf-health.timer \
+  ceh-unf-import-products.timer \
+  ceh-unf-import-locations.timer \
+  ceh-unf-sync.timer
+```
+
+Перед включением `--execute` в production unit обязательно выполните tenant-specific dry-run/UAT. Репозиторные unit-файлы уже содержат `--execute`, поэтому их нельзя активировать до завершения UAT и проверки mapping на целевой базе.
+
+Состояние и журнал:
+
+```bash
+systemctl list-timers 'ceh-unf-*'
+systemctl status ceh-unf-health.service ceh-unf-sync.service
+journalctl -u 'ceh-unf-*' --since today
+```
+
+Код `75` оставляет запуск неуспешным и хорошо виден мониторингу; следующий timer выполняет повтор. Код `2` требует исправления прав/конфигурации, код `3` — разбора blocked outbox. Секреты не должны попадать ни в unit-файлы, ни в journal.

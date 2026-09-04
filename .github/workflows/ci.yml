@@ -55,9 +55,11 @@ jobs:
           RESTORED_VERSION=$(docker exec "$PG_CONTAINER" psql -U ceh -d ceh_sklad_restore_check -Atc 'SELECT version_num FROM alembic_version')
           ACTIVE_COLUMN_COUNT=$(docker exec "$PG_CONTAINER" psql -U ceh -d ceh_sklad_restore_check -Atc "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='locations' AND column_name='is_active'")
           EXPORT_LINK_TABLE_COUNT=$(docker exec "$PG_CONTAINER" psql -U ceh -d ceh_sklad_restore_check -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='integration_export_links'")
-          test "$RESTORED_VERSION" = "20260903_08"
+          SALE_PRICE_TYPE_COLUMN_COUNT=$(docker exec "$PG_CONTAINER" psql -U ceh -d ceh_sklad_restore_check -Atc "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='stock_documents' AND column_name='sale_price_type'")
+          test "$RESTORED_VERSION" = "20260904_09"
           test "$ACTIVE_COLUMN_COUNT" = "1"
           test "$EXPORT_LINK_TABLE_COUNT" = "1"
+          test "$SALE_PRICE_TYPE_COLUMN_COUNT" = "1"
           docker exec "$PG_CONTAINER" dropdb -U ceh ceh_sklad_restore_check
 
   unf-bridge:

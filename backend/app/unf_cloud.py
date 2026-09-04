@@ -62,6 +62,7 @@ class UnfOutboxItem(BaseModel):
     ready_for_unf: bool
     blocking_reasons: list[str] = Field(default_factory=list)
     requires_split: bool = False
+    sale_price_type: Literal["retail", "wholesale"] | None = None
     source_location_external_1c_id: str | None = None
     destination_location_external_1c_id: str | None = None
     adjustment_location_external_1c_id: str | None = None
@@ -179,6 +180,8 @@ async def unf_outbox(limit: int = 50, session: AsyncSession = Depends(get_sessio
         elif document.kind == StockDocumentKind.SALE:
             if source is None or not source.external_1c_id:
                 reasons.append("Не сопоставлен склад торгового представителя с УНФ")
+            if document.sale_price_type not in {"retail", "wholesale"}:
+                reasons.append("У продажи не сохранен тип цены retail/wholesale; legacy-продажу нельзя экспортировать автоматически")
         elif document.kind == StockDocumentKind.ADJUSTMENT:
             if adjustment_location is None or not adjustment_location.external_1c_id:
                 reasons.append("Не сопоставлено место корректировки с УНФ")
@@ -211,6 +214,11 @@ async def unf_outbox(limit: int = 50, session: AsyncSession = Depends(get_sessio
                 ready_for_unf=not reasons,
                 blocking_reasons=list(dict.fromkeys(reasons)),
                 requires_split=requires_split,
+                sale_price_type=(
+                    document.sale_price_type
+                    if document.sale_price_type in {"retail", "wholesale"}
+                    else None
+                ),
                 source_location_external_1c_id=source.external_1c_id if source else None,
                 destination_location_external_1c_id=destination.external_1c_id if destination else None,
                 adjustment_location_external_1c_id=(

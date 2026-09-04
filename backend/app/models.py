@@ -101,6 +101,12 @@ class InventoryBalance(Base):
 
 class StockDocument(Base):
     __tablename__ = "stock_documents"
+    __table_args__ = (
+        CheckConstraint(
+            "sale_price_type IS NULL OR sale_price_type IN ('retail', 'wholesale')",
+            name="ck_stock_documents_sale_price_type_valid",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     kind: Mapped[StockDocumentKind] = mapped_column(Enum(StockDocumentKind), index=True)
@@ -108,6 +114,7 @@ class StockDocument(Base):
     destination_location_id: Mapped[UUID | None] = mapped_column(ForeignKey("locations.id"), nullable=True)
     created_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     comment: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    sale_price_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
     external_1c_id: Mapped[str | None] = mapped_column(String(100), unique=True, nullable=True)
     synced_1c_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     client_operation_key: Mapped[str | None] = mapped_column(String(120), unique=True, nullable=True)

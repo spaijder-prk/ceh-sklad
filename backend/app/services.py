@@ -268,6 +268,7 @@ async def create_sale(
         source_location_id=representative_location_id,
         created_by_id=created_by_id,
         comment=comment,
+        sale_price_type=price_type.value,
         client_operation_key=client_operation_key,
         client_payload_hash=client_payload_hash,
     )

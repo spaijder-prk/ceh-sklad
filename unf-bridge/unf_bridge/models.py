@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
@@ -64,9 +65,12 @@ class UnfOutboxItem:
     amount: Decimal | None
     comment: str | None
     lines: tuple[UnfLine, ...]
+    created_at: datetime | None = None
+    sale_price_type: str | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "UnfOutboxItem":
+        created_at_raw = data.get("created_at")
         return cls(
             entity_type=str(data["entity_type"]),
             internal_id=str(data["internal_id"]),
@@ -83,4 +87,10 @@ class UnfOutboxItem:
             amount=Decimal(str(data["amount"])) if data.get("amount") is not None else None,
             comment=data.get("comment"),
             lines=tuple(UnfLine.from_json(row) for row in data.get("lines", [])),
+            created_at=(
+                datetime.fromisoformat(str(created_at_raw).replace("Z", "+00:00"))
+                if created_at_raw
+                else None
+            ),
+            sale_price_type=(str(data["sale_price_type"]) if data.get("sale_price_type") else None),
         )

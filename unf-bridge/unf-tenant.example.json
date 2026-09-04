@@ -3,6 +3,7 @@
   "application_url": "https://1cfresh.com/a/REPLACE/REPLACE",
   "timezone": "Europe/Moscow",
   "post_documents": false,
+  "product_deletion_policy": "block",
   "expected_metadata_structure_sha256": "",
   "resources": {
     "products": "REPLACE_FROM_METADATA",
@@ -28,7 +29,9 @@
     "ref": "REPLACE_FIELD_FROM_METADATA",
     "sku": "REPLACE_FIELD_FROM_METADATA",
     "name": "REPLACE_FIELD_FROM_METADATA",
-    "unit_name": "REPLACE_FIELD_FROM_METADATA_OR_REMOVE_THIS_LINE"
+    "unit_name": "REPLACE_FIELD_FROM_METADATA_OR_REMOVE_THIS_LINE",
+    "deletion_mark": "REPLACE_DELETION_MARK_FIELD_FROM_METADATA",
+    "version": "REPLACE_VERSION_FIELD_FROM_METADATA_IF_AUTO_ARCHIVE"
   },
   "location_fields": {
     "ref": "REPLACE_FIELD_FROM_METADATA",

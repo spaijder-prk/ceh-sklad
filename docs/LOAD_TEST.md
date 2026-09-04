@@ -31,10 +31,8 @@ python ../scripts/load_test.py \
   --product-id 22222222-2222-2222-2222-222222222222 \
   --requests 100 \
   --concurrency 20 \
-  --output /tmp/ceh-load-dry-run.json
+  --output /tmp/load-test-dry-run.json
 ```
-
-Dry-run JSON намеренно не содержит выдуманных latency/throughput: соответствующие поля равны `null`.
 
 ## Реальный тест
 
@@ -50,35 +48,32 @@ python ../scripts/load_test.py \
   --requests 100 \
   --concurrency 20 \
   --quantity 1 \
-  --output /tmp/ceh-load-execute.json \
+  --min-success-rate 100 \
+  --max-p95-ms 500 \
+  --min-throughput-rps 10 \
+  --output /tmp/load-test-execute.json \
   --execute
 ```
 
 Перед стартом скрипт проверяет, что подтвержденного остатка хватит на весь заявленный тест. Вне localhost реальный запуск разрешен только через HTTPS.
 
-Каждая продажа получает уникальный `operation_key`. После успешного прогона первая операция отправляется повторно с тем же ключом; document ID обязан совпасть. Поле `idempotency_verified=true` в JSON означает, что этот реальный повтор успешно подтвержден.
+Каждая продажа получает уникальный `operation_key`. После успешного прогона первая операция отправляется повторно с тем же ключом; document ID обязан совпасть, что дополнительно проверяет идемпотентность под реальным HTTP-контуром.
 
-## Машинный результат
+## Acceptance-пороги
 
-С `--output` сохраняется JSON с:
+`--min-success-rate` по умолчанию равен `100`, поэтому любой неуспешный запрос делает execute-прогон красным. `--max-p95-ms=0` и `--min-throughput-rps=0` означают, что соответствующий performance-порог пока не применяется. После согласования staging-инфраструктуры задайте реальные значения явно.
 
-- режимом `dry-run|execute`, run id и входными параметрами;
-- количеством success/failure и `success_rate` в процентах;
-- общим временем и `throughput_rps`;
-- min / p50 / p95 / max latency в миллисекундах;
-- результатом идемпотентного повтора;
-- первыми 10 ошибками без токена/пароля.
+Execute-прогон также считается неуспешным, если не удалось подтвердить идемпотентный повтор первого успешного запроса. Примененные пороги и причины их нарушения сохраняются в JSON (`threshold_*`, `thresholds_passed`, `threshold_violations`).
 
-Консольный вывод остается для оператора, но production-приемка должна ссылаться именно на JSON artifact из workflow `Staging-приемка`.
+## Результат
 
-## Критерии приемки
+Скрипт печатает и при `--output` сохраняет в JSON:
 
-Пороговые значения p95/throughput/success rate задаются исходя из реального числа представителей и инфраструктуры до финального прогона. Их нельзя подгонять после получения результата.
+- количество успешных/ошибочных запросов и success rate;
+- общее время и throughput;
+- min / p50 / p95 / max latency;
+- результат идемпотентного повтора;
+- примененные acceptance-пороги и причины нарушения;
+- первые 10 ошибок.
 
-После фактического execute-прогона зафиксируйте в release record:
-
-- `success_rate`;
-- `throughput_rps`;
-- `latency_p95_ms`;
-- `idempotency_verified`;
-- SHA release commit и ссылку на `staging-load-test-results` artifact.
+Workflow `Staging-приемка` сохраняет dry-run и execute JSON в artifact `staging-load-test-results`. Для production-приемки укажите согласованные p95/throughput thresholds во входных параметрах workflow и приложите artifact к release checklist.

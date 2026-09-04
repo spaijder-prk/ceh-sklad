@@ -30,6 +30,21 @@ on:
         required: true
         default: "1"
         type: string
+      min_success_rate:
+        description: Минимальный success rate, %, для execute load-test
+        required: true
+        default: "100"
+        type: string
+      max_p95_ms:
+        description: Максимальный p95, мс; 0 = не проверять
+        required: true
+        default: "0"
+        type: string
+      min_throughput_rps:
+        description: Минимальный throughput, req/s; 0 = не проверять
+        required: true
+        default: "0"
+        type: string
       require_unf_ready:
         description: Падать, если в outbox УНФ есть документы без сопоставлений
         required: true
@@ -116,6 +131,9 @@ jobs:
           --requests "${{ inputs.requests }}"
           --concurrency "${{ inputs.concurrency }}"
           --quantity "${{ inputs.quantity }}"
+          --min-success-rate "${{ inputs.min_success_rate }}"
+          --max-p95-ms "${{ inputs.max_p95_ms }}"
+          --min-throughput-rps "${{ inputs.min_throughput_rps }}"
           --output "$RUNNER_TEMP/load-test-dry-run.json"
       - name: Выполнить реальные тестовые продажи
         if: ${{ inputs.execute_sales }}
@@ -132,6 +150,9 @@ jobs:
           --requests "${{ inputs.requests }}"
           --concurrency "${{ inputs.concurrency }}"
           --quantity "${{ inputs.quantity }}"
+          --min-success-rate "${{ inputs.min_success_rate }}"
+          --max-p95-ms "${{ inputs.max_p95_ms }}"
+          --min-throughput-rps "${{ inputs.min_throughput_rps }}"
           --output "$RUNNER_TEMP/load-test-execute.json"
           --execute
       - name: Сохранить результаты load-test

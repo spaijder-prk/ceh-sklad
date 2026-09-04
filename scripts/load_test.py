@@ -51,6 +51,11 @@ class LoadTestReport:
     latency_p95_ms: float | None
     latency_max_ms: float | None
     idempotency_verified: bool
+    threshold_min_success_rate: float
+    threshold_max_p95_ms: float | None
+    threshold_min_throughput_rps: float | None
+    thresholds_passed: bool | None
+    threshold_violations: tuple[str, ...]
     failure_samples: tuple[dict[str, object], ...]
 
 
@@ -60,6 +65,41 @@ def percentile(values: list[float], fraction: float) -> float:
     ordered = sorted(values)
     position = round((len(ordered) - 1) * fraction)
     return ordered[position]
+
+
+def normalized_thresholds(args: argparse.Namespace) -> tuple[float, float | None, float | None]:
+    return (
+        float(args.min_success_rate),
+        float(args.max_p95_ms) if args.max_p95_ms > 0 else None,
+        float(args.min_throughput_rps) if args.min_throughput_rps > 0 else None,
+    )
+
+
+def evaluate_thresholds(
+    *,
+    args: argparse.Namespace,
+    success_rate: float,
+    latency_p95_ms: float,
+    throughput_rps: float,
+    idempotency_verified: bool,
+) -> tuple[str, ...]:
+    min_success_rate, max_p95_ms, min_throughput_rps = normalized_thresholds(args)
+    violations: list[str] = []
+    if success_rate < min_success_rate:
+        violations.append(
+            f"success_rate {success_rate:.2f}% < требуемых {min_success_rate:.2f}%"
+        )
+    if max_p95_ms is not None and latency_p95_ms > max_p95_ms:
+        violations.append(
+            f"p95 {latency_p95_ms:.1f} ms > допустимых {max_p95_ms:.1f} ms"
+        )
+    if min_throughput_rps is not None and throughput_rps < min_throughput_rps:
+        violations.append(
+            f"throughput {throughput_rps:.2f} req/s < требуемых {min_throughput_rps:.2f} req/s"
+        )
+    if not idempotency_verified:
+        violations.append("идемпотентный повтор первого успешного запроса не подтвержден")
+    return tuple(violations)
 
 
 def build_execution_report(
@@ -77,9 +117,21 @@ def build_execution_report(
     count = len(results)
     success_rate = (len(successes) / count * 100.0) if count else 0.0
     throughput = count / wall_seconds if wall_seconds > 0 else 0.0
+    latency_min = min(latencies) if latencies else 0.0
+    latency_p50 = statistics.median(latencies) if latencies else 0.0
+    latency_p95 = percentile(latencies, 0.95) if latencies else 0.0
+    latency_max = max(latencies) if latencies else 0.0
+    min_success_rate, max_p95_ms, min_throughput_rps = normalized_thresholds(args)
+    violations = evaluate_thresholds(
+        args=args,
+        success_rate=success_rate,
+        latency_p95_ms=latency_p95,
+        throughput_rps=throughput,
+        idempotency_verified=idempotency_verified,
+    )
 
     return LoadTestReport(
-        schema_version=1,
+        schema_version=2,
         mode="execute",
         run_id=run_id,
         requests=args.requests,
@@ -95,11 +147,16 @@ def build_execution_report(
         success_rate=round(success_rate, 4),
         wall_seconds=round(wall_seconds, 6),
         throughput_rps=round(throughput, 4),
-        latency_min_ms=round(min(latencies), 3) if latencies else None,
-        latency_p50_ms=round(statistics.median(latencies), 3) if latencies else None,
-        latency_p95_ms=round(percentile(latencies, 0.95), 3) if latencies else None,
-        latency_max_ms=round(max(latencies), 3) if latencies else None,
+        latency_min_ms=round(latency_min, 3),
+        latency_p50_ms=round(latency_p50, 3),
+        latency_p95_ms=round(latency_p95, 3),
+        latency_max_ms=round(latency_max, 3),
         idempotency_verified=idempotency_verified,
+        threshold_min_success_rate=min_success_rate,
+        threshold_max_p95_ms=max_p95_ms,
+        threshold_min_throughput_rps=min_throughput_rps,
+        thresholds_passed=not violations,
+        threshold_violations=violations,
         failure_samples=tuple(
             {
                 "index": row.index,
@@ -113,8 +170,9 @@ def build_execution_report(
 
 
 def build_dry_run_report(args: argparse.Namespace, available: Decimal) -> LoadTestReport:
+    min_success_rate, max_p95_ms, min_throughput_rps = normalized_thresholds(args)
     return LoadTestReport(
-        schema_version=1,
+        schema_version=2,
         mode="dry-run",
         run_id=None,
         requests=args.requests,
@@ -135,6 +193,11 @@ def build_dry_run_report(args: argparse.Namespace, available: Decimal) -> LoadTe
         latency_p95_ms=None,
         latency_max_ms=None,
         idempotency_verified=False,
+        threshold_min_success_rate=min_success_rate,
+        threshold_max_p95_ms=max_p95_ms,
+        threshold_min_throughput_rps=min_throughput_rps,
+        thresholds_passed=None,
+        threshold_violations=(),
         failure_samples=(),
     )
 
@@ -163,6 +226,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--price-type", choices=("retail", "wholesale"), default="retail")
     parser.add_argument("--timeout", type=float, default=20.0, help="HTTP timeout в секундах")
     parser.add_argument("--output", type=Path, help="Сохранить машинный JSON-отчет")
+    parser.add_argument(
+        "--min-success-rate",
+        type=float,
+        default=100.0,
+        help="Минимальный success rate в процентах; по умолчанию 100",
+    )
+    parser.add_argument(
+        "--max-p95-ms",
+        type=float,
+        default=0.0,
+        help="Максимальный p95 в мс; 0 отключает этот порог",
+    )
+    parser.add_argument(
+        "--min-throughput-rps",
+        type=float,
+        default=0.0,
+        help="Минимальный throughput req/s; 0 отключает этот порог",
+    )
     parser.add_argument("--execute", action="store_true", help="Действительно провести продажи")
     return parser.parse_args()
 
@@ -176,6 +257,12 @@ def validate_args(args: argparse.Namespace) -> None:
         args.concurrency = args.requests
     if args.quantity <= 0:
         raise ValueError("--quantity должен быть > 0")
+    if not 0 <= args.min_success_rate <= 100:
+        raise ValueError("--min-success-rate должен быть от 0 до 100")
+    if args.max_p95_ms < 0:
+        raise ValueError("--max-p95-ms должен быть >= 0")
+    if args.min_throughput_rps < 0:
+        raise ValueError("--min-throughput-rps должен быть >= 0")
 
     parsed = urlparse(args.base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -363,6 +450,12 @@ async def main_async(args: argparse.Namespace) -> int:
             f"max={report.latency_max_ms:.1f}"
         )
         print(f"Идемпотентность первого успешного запроса: {'OK' if idempotency_verified else 'не проверена'}")
+        if report.thresholds_passed:
+            print("Acceptance-пороги: OK")
+        else:
+            print("Acceptance-пороги: НЕ ПРОЙДЕНЫ")
+            for violation in report.threshold_violations:
+                print(f"  - {violation}")
         for row in failures[:10]:
             print(
                 f"FAIL #{row.index}: status={row.status_code} "
@@ -371,7 +464,7 @@ async def main_async(args: argparse.Namespace) -> int:
         if args.output:
             print(f"JSON-отчет: {args.output}")
 
-        return 0 if not failures else 1
+        return 0 if report.thresholds_passed else 1
 
 
 def main() -> int:

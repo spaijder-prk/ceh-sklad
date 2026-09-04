@@ -186,8 +186,8 @@ export async function createProduct(payload: {
       sku: payload.sku.trim(),
       name: payload.name.trim(),
       unit: payload.unit.trim(),
-      retail_price: payload.retailPrice.replace(",", "."),
-      wholesale_price: payload.wholesalePrice.replace(",", "."),
+      retail_price: normalizeDecimal(payload.retailPrice),
+      wholesale_price: normalizeDecimal(payload.wholesalePrice),
     }),
   });
 }
@@ -208,9 +208,65 @@ export async function registerPayment(
     method: "POST",
     body: JSON.stringify({
       representative_id: representativeId,
-      amount: amount.replace(",", "."),
+      amount: normalizeDecimal(amount),
       comment: comment.trim() || "Сдача денег через веб-панель",
       external_id: `web-payment-${crypto.randomUUID()}`,
     }),
   });
+}
+
+export async function receiveGoods(
+  warehouseId: string,
+  productId: string,
+  quantity: string,
+): Promise<void> {
+  await request("/api/v1/operations/receipt", {
+    method: "POST",
+    body: JSON.stringify({
+      warehouse_id: warehouseId,
+      lines: [{ product_id: productId, quantity: normalizeDecimal(quantity) }],
+      comment: "Приход через веб-панель",
+      external_id: `web-receipt-${crypto.randomUUID()}`,
+    }),
+  });
+}
+
+export async function issueToRepresentative(
+  warehouseId: string,
+  representativeId: string,
+  productId: string,
+  quantity: string,
+): Promise<void> {
+  await request("/api/v1/operations/issue-to-representative", {
+    method: "POST",
+    body: JSON.stringify({
+      warehouse_id: warehouseId,
+      representative_id: representativeId,
+      lines: [{ product_id: productId, quantity: normalizeDecimal(quantity) }],
+      comment: "Выдача представителю через веб-панель",
+      external_id: `web-issue-${crypto.randomUUID()}`,
+    }),
+  });
+}
+
+export async function transferBetweenWarehouses(
+  sourceWarehouseId: string,
+  targetWarehouseId: string,
+  productId: string,
+  quantity: string,
+): Promise<void> {
+  await request("/api/v1/operations/warehouse-transfer", {
+    method: "POST",
+    body: JSON.stringify({
+      source_warehouse_id: sourceWarehouseId,
+      target_warehouse_id: targetWarehouseId,
+      lines: [{ product_id: productId, quantity: normalizeDecimal(quantity) }],
+      comment: "Перемещение между складами через веб-панель",
+      external_id: `web-transfer-${crypto.randomUUID()}`,
+    }),
+  });
+}
+
+function normalizeDecimal(value: string): string {
+  return value.trim().replace(",", ".");
 }

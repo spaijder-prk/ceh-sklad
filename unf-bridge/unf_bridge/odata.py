@@ -19,6 +19,7 @@ _GUID_RE = re.compile(
 class ODataEntitySet:
     name: str
     entity_type: str
+    properties: tuple[str, ...] = ()
 
 
 def _local_name(tag: str) -> str:
@@ -41,8 +42,8 @@ class FreshODataClient:
     """Низкоуровневый клиент стандартного OData интерфейса 1С:Фреш.
 
     Клиент намеренно не знает имена объектов конкретной версии УНФ. Сначала bridge
-    читает `$metadata`, затем tenant-конфигурация сопоставляет найденные EntitySet с
-    нужными документами и справочниками.
+    читает `$metadata`, затем tenant-конфигурация сопоставляет найденные EntitySet и
+    их свойства с нужными документами и справочниками.
     """
 
     def __init__(
@@ -91,6 +92,27 @@ class FreshODataClient:
     def entity_sets(self) -> list[ODataEntitySet]:
         raw = self.metadata()
         root = ElementTree.fromstring(raw)
+        properties_by_type: dict[str, tuple[str, ...]] = {}
+
+        for schema in root.iter():
+            if _local_name(schema.tag) != "Schema":
+                continue
+            namespace = schema.attrib.get("Namespace", "")
+            for entity_type in schema:
+                if _local_name(entity_type.tag) != "EntityType":
+                    continue
+                type_name = entity_type.attrib.get("Name")
+                if not type_name:
+                    continue
+                properties = tuple(
+                    child.attrib["Name"]
+                    for child in entity_type
+                    if _local_name(child.tag) == "Property" and child.attrib.get("Name")
+                )
+                properties_by_type[type_name] = properties
+                if namespace:
+                    properties_by_type[f"{namespace}.{type_name}"] = properties
+
         result: list[ODataEntitySet] = []
         for element in root.iter():
             if _local_name(element.tag) != "EntitySet":
@@ -98,7 +120,13 @@ class FreshODataClient:
             name = element.attrib.get("Name")
             entity_type = element.attrib.get("EntityType")
             if name and entity_type:
-                result.append(ODataEntitySet(name=name, entity_type=entity_type))
+                result.append(
+                    ODataEntitySet(
+                        name=name,
+                        entity_type=entity_type,
+                        properties=properties_by_type.get(entity_type, ()),
+                    )
+                )
         return sorted(result, key=lambda item: item.name.casefold())
 
     def list(

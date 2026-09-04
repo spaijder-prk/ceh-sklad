@@ -16,6 +16,8 @@ MAPPING_DATA = {
     "post_documents": True,
     "resources": {
         "products": "Catalog_Номенклатура",
+        "price_types": "Catalog_ВидыЦен",
+        "prices": "InformationRegister_ЦеныНоменклатуры",
         "warehouses": "Catalog_Склады",
         "organizations": "Catalog_Организации",
         "counterparties": "Catalog_Контрагенты",
@@ -32,7 +34,10 @@ MAPPING_DATA = {
         "stock_receipt": "Комментарий",
         "stock_writeoff": "Комментарий",
     },
-    "constants": {},
+    "constants": {
+        "retail_price_type_ref": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "wholesale_price_type_ref": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    },
 }
 
 
@@ -44,13 +49,15 @@ class FakeClient:
         self.post_calls: list[tuple[str, str]] = []
 
     def entity_sets(self) -> list[ODataEntitySet]:
+        document_resources = set(MAPPING_DATA["external_key_fields"])
+        by_alias = MAPPING_DATA["resources"]
         return [
             ODataEntitySet(
                 name=name,
                 entity_type=f"StandardODATA.{name}",
-                properties=("Ref_Key", "Комментарий"),
+                properties=("Ref_Key", "Комментарий") if alias in document_resources else ("Ref_Key",),
             )
-            for name in MAPPING_DATA["resources"].values()
+            for alias, name in by_alias.items()
         ]
 
     def find_one_by_text_field(self, resource: str, field: str, value: str) -> dict[str, Any] | None:

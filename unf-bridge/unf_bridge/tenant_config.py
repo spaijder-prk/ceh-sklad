@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -9,8 +10,14 @@ from urllib.parse import urlparse
 from .odata import ODataEntitySet
 
 
+_GUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
 REQUIRED_RESOURCES = (
     "products",
+    "price_types",
+    "prices",
     "warehouses",
     "organizations",
     "counterparties",
@@ -27,6 +34,11 @@ DOCUMENT_RESOURCES = (
     "cash_receipt",
     "stock_receipt",
     "stock_writeoff",
+)
+
+REQUIRED_CONSTANTS = (
+    "retail_price_type_ref",
+    "wholesale_price_type_ref",
 )
 
 
@@ -68,6 +80,17 @@ class TenantMapping:
             raise ValueError(
                 "Не заданы поля устойчивого внешнего ключа: " + ", ".join(missing_external_fields)
             )
+        missing_constants = [key for key in REQUIRED_CONSTANTS if not constants.get(key)]
+        if missing_constants:
+            raise ValueError(
+                "Не заданы обязательные сопоставления видов цен УНФ: " + ", ".join(missing_constants)
+            )
+
+        for key, value in constants.items():
+            if key.endswith("_ref") and value and not _GUID_RE.fullmatch(value):
+                raise ValueError(f"{key} должен содержать Ref_Key GUID из УНФ")
+        if constants["retail_price_type_ref"].lower() == constants["wholesale_price_type_ref"].lower():
+            raise ValueError("Розничный и оптовый виды цен УНФ должны быть разными")
 
         return cls(
             provider=provider,

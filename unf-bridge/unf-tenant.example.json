@@ -5,6 +5,8 @@
   "post_documents": false,
   "resources": {
     "products": "REPLACE_FROM_METADATA",
+    "price_types": "REPLACE_FROM_METADATA",
+    "prices": "REPLACE_FROM_METADATA",
     "warehouses": "REPLACE_FROM_METADATA",
     "organizations": "REPLACE_FROM_METADATA",
     "counterparties": "REPLACE_FROM_METADATA",
@@ -22,6 +24,8 @@
     "stock_writeoff": "REPLACE_FIELD_FROM_METADATA"
   },
   "constants": {
+    "retail_price_type_ref": "REPLACE_RETAIL_PRICE_TYPE_GUID",
+    "wholesale_price_type_ref": "REPLACE_WHOLESALE_PRICE_TYPE_GUID",
     "organization_ref": "",
     "cashbox_ref": "",
     "cash_flow_item_ref": "",

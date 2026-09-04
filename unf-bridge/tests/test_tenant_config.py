@@ -13,6 +13,8 @@ VALID = {
     "post_documents": False,
     "resources": {
         "products": "Catalog_Номенклатура",
+        "price_types": "Catalog_ВидыЦен",
+        "prices": "InformationRegister_ЦеныНоменклатуры",
         "warehouses": "Catalog_Склады",
         "organizations": "Catalog_Организации",
         "counterparties": "Catalog_Контрагенты",
@@ -30,6 +32,8 @@ VALID = {
         "stock_writeoff": "Комментарий",
     },
     "constants": {
+        "retail_price_type_ref": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "wholesale_price_type_ref": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
         "organization_ref": "11111111-1111-1111-1111-111111111111",
         "cashbox_ref": "22222222-2222-2222-2222-222222222222",
     },
@@ -46,14 +50,15 @@ def test_tenant_mapping_validates_required_resources_and_metadata():
     summary = mapping.public_summary()
     assert summary["provider"] == "1cfresh"
     assert summary["post_documents"] is False
+    assert "retail_price_type_ref" in summary["configured_constants"]
+    assert "wholesale_price_type_ref" in summary["configured_constants"]
     assert "organization_ref" in summary["configured_constants"]
-    assert "cashbox_ref" in summary["configured_constants"]
 
 
 def test_tenant_mapping_rejects_missing_resource():
     payload = {**VALID, "resources": {**VALID["resources"]}}
-    del payload["resources"]["sale"]
-    with pytest.raises(ValueError, match="sale"):
+    del payload["resources"]["prices"]
+    with pytest.raises(ValueError, match="prices"):
         TenantMapping.from_dict(payload)
 
 
@@ -61,6 +66,24 @@ def test_tenant_mapping_requires_external_key_field_for_each_document():
     payload = {**VALID, "external_key_fields": {**VALID["external_key_fields"]}}
     del payload["external_key_fields"]["cash_receipt"]
     with pytest.raises(ValueError, match="cash_receipt"):
+        TenantMapping.from_dict(payload)
+
+
+def test_tenant_mapping_requires_two_explicit_price_types():
+    payload = {**VALID, "constants": {**VALID["constants"]}}
+    del payload["constants"]["wholesale_price_type_ref"]
+    with pytest.raises(ValueError, match="wholesale_price_type_ref"):
+        TenantMapping.from_dict(payload)
+
+    payload = {**VALID, "constants": {**VALID["constants"]}}
+    payload["constants"]["wholesale_price_type_ref"] = payload["constants"]["retail_price_type_ref"]
+    with pytest.raises(ValueError, match="должны быть разными"):
+        TenantMapping.from_dict(payload)
+
+
+def test_tenant_mapping_rejects_invalid_ref_guid():
+    payload = {**VALID, "constants": {**VALID["constants"], "cashbox_ref": "not-a-guid"}}
+    with pytest.raises(ValueError, match="cashbox_ref"):
         TenantMapping.from_dict(payload)
 
 

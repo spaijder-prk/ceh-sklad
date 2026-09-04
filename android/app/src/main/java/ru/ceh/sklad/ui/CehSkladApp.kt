@@ -170,7 +170,13 @@ fun CehSkladApp() {
                             password = ""
                             pendingCount = repository.pendingCount()
                         }
-                        .onFailure { error = "Не удалось войти. Проверьте логин и пароль" }
+                        .onFailure { failure ->
+                            error = when (failure) {
+                                is ru.ceh.sklad.data.LoginRejectedException,
+                                is ru.ceh.sklad.data.MobileSessionRejectedException -> failure.message ?: "Не удалось войти. Повторите попытку."
+                                else -> "Не удалось войти. Повторите попытку."
+                            }
+                        }
                     loading = false
                 }
             }

@@ -43,7 +43,15 @@ class WarehouseRepository(context: Context) {
         .create(WarehouseApi::class.java)
 
     suspend fun login(login: String, password: String): UserInfo {
-        val response = api.login(LoginRequest(login, password))
+        val response = try {
+            api.login(LoginRequest(login, password))
+        } catch (_: IOException) {
+            throw LoginRejectedException("Нет связи с сервером. Проверьте интернет и повторите попытку.")
+        } catch (error: HttpException) {
+            val retryAfter = error.response()?.headers()?.get("Retry-After")
+            throw LoginRejectedException(loginErrorMessage(error.code(), retryAfter))
+        }
+
         token = response.access_token
         return try {
             val user = requireMobileRepresentative(api.me())
@@ -53,6 +61,18 @@ class WarehouseRepository(context: Context) {
         } catch (error: MobileSessionRejectedException) {
             logout()
             throw error
+        } catch (_: IOException) {
+            token = null
+            throw LoginRejectedException("Вход подтвержден, но профиль не загрузился. Проверьте связь и повторите попытку.")
+        } catch (error: HttpException) {
+            token = null
+            throw LoginRejectedException(
+                if (error.code() == 401) {
+                    "Сессия входа не подтверждена. Повторите попытку."
+                } else {
+                    "Не удалось завершить вход. Сервер вернул HTTP ${error.code()}."
+                }
+            )
         }
     }
 
@@ -256,6 +276,21 @@ class WarehouseRepository(context: Context) {
     }
 }
 
+internal fun loginErrorMessage(statusCode: Int, retryAfterHeader: String?): String {
+    return when (statusCode) {
+        401 -> "Неверный логин или пароль."
+        429 -> retryAfterHeader
+            ?.trim()
+            ?.toLongOrNull()
+            ?.coerceAtLeast(1L)
+            ?.let { seconds -> "Слишком много попыток входа. Повторите через $seconds сек." }
+            ?: "Слишком много попыток входа. Повторите позже."
+        in 500..599 -> "Сервер временно недоступен. Повторите попытку позже."
+        else -> "Не удалось войти. Сервер вернул HTTP $statusCode."
+    }
+}
+
+class LoginRejectedException(message: String) : IllegalStateException(message)
 class OperationRejectedException(message: String) : IllegalStateException(message)
 
 class RealtimeSubscription(

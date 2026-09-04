@@ -55,3 +55,16 @@ def test_guarded_cli_converts_http_429_to_exit_75(capsys):
     stderr = capsys.readouterr().err
     assert "HTTP 429" in stderr
     assert "Retry-After=15s" in stderr
+
+
+def test_guarded_cli_converts_local_mapping_error_to_exit_2(capsys):
+    @guarded_remote_cli
+    def command():
+        raise ValueError("Schema lock УНФ не совпадает")
+
+    with pytest.raises(SystemExit) as exc:
+        command()
+    assert exc.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "CONFIG_ERROR" in stderr
+    assert "Schema lock УНФ" in stderr

@@ -95,6 +95,11 @@ def audit_mapping_data(data: dict[str, Any]) -> TenantAuditReport:
                     + ", ".join(missing_rows)
                 )
 
+        if tenant.expected_metadata_structure_sha256 is None:
+            warnings.append(
+                "expected_metadata_structure_sha256 не задан: --execute будет заблокирован "
+                "до фиксации принятой схемы УНФ"
+            )
         if not tenant.post_documents:
             warnings.append(
                 "post_documents=false: документы будут записываться без автоматического проведения"

@@ -41,6 +41,8 @@ class BridgeHealth:
     provider: str
     mapping_sha256: str | None
     metadata_structure_sha256: str
+    expected_metadata_structure_sha256: str | None
+    metadata_structure_matches_expected: bool
     published_entity_sets: int
     outbox_items: int
     ready_items: int
@@ -97,6 +99,10 @@ def check_health(
     entity_sets: list[ODataEntitySet] = fresh_client.entity_sets()
     mapping.validate_against_metadata(entity_sets)
     metadata_digest = metadata_structure_sha256(mapping.application_url, entity_sets)
+    expected_metadata_digest = mapping.expected_metadata_structure_sha256
+    metadata_matches_expected = (
+        expected_metadata_digest is None or metadata_digest == expected_metadata_digest
+    )
 
     catalog_errors: list[str] = []
     if product_mapping is not None:
@@ -174,6 +180,7 @@ def check_health(
         and not payload_errors
         and catalog_ready
         and references_ready
+        and metadata_matches_expected
     )
     return BridgeHealth(
         status="ready" if is_ready else "degraded",
@@ -186,6 +193,8 @@ def check_health(
         provider=mapping.provider,
         mapping_sha256=mapping_sha256,
         metadata_structure_sha256=metadata_digest,
+        expected_metadata_structure_sha256=expected_metadata_digest,
+        metadata_structure_matches_expected=metadata_matches_expected,
         published_entity_sets=len(entity_sets),
         outbox_items=len(items),
         ready_items=ready,

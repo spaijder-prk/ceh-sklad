@@ -75,7 +75,7 @@ def guarded_remote_cli(fn: Callable[P, R]) -> Callable[P, R]:
     """Единая граница ошибок для консольных команд bridge.
 
     Код 75 означает временную ошибку и допускает автоматический повтор планировщиком.
-    Код 2 означает ошибку прав/данных/контракта, требующую ручного исправления.
+    Код 2 означает ошибку прав/данных/конфигурации, требующую ручного исправления.
     """
 
     @wraps(fn)
@@ -91,5 +91,8 @@ def guarded_remote_cli(fn: Callable[P, R]) -> Callable[P, R]:
             )
             print(f"REMOTE_ERROR: {failure.message}{suffix}", file=sys.stderr)
             raise SystemExit(failure.exit_code) from exc
+        except ValueError as exc:
+            print(f"CONFIG_ERROR: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
 
     return wrapped

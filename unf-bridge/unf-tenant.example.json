@@ -3,6 +3,7 @@
   "application_url": "https://1cfresh.com/a/REPLACE/REPLACE",
   "timezone": "Europe/Moscow",
   "post_documents": false,
+  "expected_metadata_structure_sha256": "",
   "resources": {
     "products": "REPLACE_FROM_METADATA",
     "price_types": "REPLACE_FROM_METADATA",

@@ -5,11 +5,9 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from .ceh_client import CehSkladClient
 from .fresh_transport import FreshTransport
-from .models import UnfOutboxItem
 from .odata import FreshODataClient
 from .operation_payloads import UnfOperationPayloadFactory
 from .planner import build_plan
@@ -38,7 +36,7 @@ def run_sync(
 ) -> SyncSummary:
     """Валидирует контур и либо планирует, либо доставляет текущий outbox."""
     profile = ceh_client.profile()
-    transport.validate_configuration()
+    transport.validate_configuration(require_schema_lock=execute)
     processor = UnfBridgeProcessor(ceh_client, transport, payload_factory)
 
     ready = 0
@@ -111,7 +109,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--execute",
         action="store_true",
-        help="Разрешить создание документов УНФ и confirm-export; без флага выполняется только dry-run",
+        help=(
+            "Разрешить создание документов УНФ и confirm-export; требует принятого "
+            "expected_metadata_structure_sha256. Без флага выполняется только dry-run"
+        ),
     )
     parser.add_argument(
         "--allow-http-ceh",

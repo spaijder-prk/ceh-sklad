@@ -22,6 +22,16 @@ def validate_mapping_against_snapshot(
             "application_url в mapping не совпадает с application_url metadata snapshot"
         )
     mapping.validate_against_metadata(entity_sets)
+    structure_digest = metadata_structure_sha256(
+        snapshot_application_url,
+        entity_sets,
+    )
+    expected_digest = mapping.expected_metadata_structure_sha256
+    if expected_digest is not None and expected_digest != structure_digest:
+        raise ValueError(
+            "expected_metadata_structure_sha256 не совпадает со структурой snapshot: "
+            f"ожидался {expected_digest}, получен {structure_digest}"
+        )
     return {
         "status": "ready",
         "snapshot_schema": SNAPSHOT_SCHEMA_VERSION,
@@ -30,9 +40,10 @@ def validate_mapping_against_snapshot(
         "configured_resources": len(set(mapping.resources.values())),
         "payload_schemas": len(mapping.payload_schemas),
         "reference_checks": len(mapping.reference_checks),
-        "metadata_structure_sha256": metadata_structure_sha256(
-            snapshot_application_url,
-            entity_sets,
+        "metadata_structure_sha256": structure_digest,
+        "expected_metadata_structure_sha256": expected_digest,
+        "metadata_structure_matches_expected": (
+            expected_digest is None or expected_digest == structure_digest
         ),
     }
 

@@ -14,6 +14,7 @@ _GUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 _RESOURCE_RE = re.compile(r"^[A-Za-zА-Яа-яЁё0-9_]+$")
+_SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 REQUIRED_RESOURCES = (
     "products",
@@ -149,6 +150,7 @@ class TenantMapping:
     payload_schemas: dict[str, DocumentPayloadMapping]
     representative_payer_refs: dict[str, str]
     reference_checks: tuple[ReferenceCheck, ...] = ()
+    expected_metadata_structure_sha256: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TenantMapping":
@@ -166,6 +168,9 @@ class TenantMapping:
             str(key).strip(): str(value).strip()
             for key, value in dict(data.get("representative_payer_refs", {})).items()
         }
+        expected_metadata_structure_sha256 = (
+            str(data.get("expected_metadata_structure_sha256", "")).strip().lower() or None
+        )
 
         if provider not in {"1cfresh", "other"}:
             raise ValueError("provider должен быть 1cfresh или other")
@@ -174,6 +179,13 @@ class TenantMapping:
             raise ValueError("application_url должен быть полноценным HTTPS URL")
         if not timezone:
             raise ValueError("Не задан timezone базы УНФ")
+        if (
+            expected_metadata_structure_sha256 is not None
+            and not _SHA256_RE.fullmatch(expected_metadata_structure_sha256)
+        ):
+            raise ValueError(
+                "expected_metadata_structure_sha256 должен быть SHA-256 из 64 hex-символов"
+            )
 
         missing_resources = [key for key in REQUIRED_RESOURCES if not resources.get(key)]
         if missing_resources:
@@ -249,6 +261,7 @@ class TenantMapping:
             payload_schemas=payload_schemas,
             representative_payer_refs=representative_payer_refs,
             reference_checks=tuple(reference_checks),
+            expected_metadata_structure_sha256=expected_metadata_structure_sha256,
         )
 
     @classmethod
@@ -353,4 +366,5 @@ class TenantMapping:
             "representative_payer_mappings": len(self.representative_payer_refs),
             "reference_checks": [check.name for check in self.reference_checks],
             "configured_constants": sorted(key for key, value in self.constants.items() if value),
+            "expected_metadata_structure_sha256": self.expected_metadata_structure_sha256,
         }

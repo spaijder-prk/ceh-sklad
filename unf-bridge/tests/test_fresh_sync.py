@@ -33,10 +33,13 @@ class FakeCehClient:
 class FakeTransport:
     def __init__(self) -> None:
         self.validated = 0
+        self.require_schema_lock_values: list[bool] = []
         self.writes: list[tuple[str, str, dict]] = []
 
-    def validate_configuration(self) -> None:
+    def validate_configuration(self, *, require_schema_lock: bool = False) -> str:
         self.validated += 1
+        self.require_schema_lock_values.append(require_schema_lock)
+        return "a" * 64
 
     def ensure_document(self, alias: str, external_key: str, payload: dict) -> DocumentWriteResult:
         self.writes.append((alias, external_key, payload))
@@ -86,13 +89,14 @@ def test_dry_run_validates_and_builds_payload_but_never_writes_or_confirms():
 
     summary = run_sync(ceh, transport, payload_factory, execute=False)  # type: ignore[arg-type]
     assert transport.validated == 1
+    assert transport.require_schema_lock_values == [False]
     assert len(payload_calls) == 1
     assert transport.writes == []
     assert ceh.confirmed == []
     assert summary.ready_items == 1 and summary.processed_items == 0
 
 
-def test_execute_uses_retry_safe_processor_and_confirms_only_after_write():
+def test_execute_requires_schema_lock_then_uses_retry_safe_processor():
     ceh = FakeCehClient([ready_item()])
     transport = FakeTransport()
     summary = run_sync(
@@ -101,6 +105,7 @@ def test_execute_uses_retry_safe_processor_and_confirms_only_after_write():
         lambda item, document: {"safe": True},
         execute=True,
     )  # type: ignore[arg-type]
+    assert transport.require_schema_lock_values == [True]
     assert len(transport.writes) == 1
     assert ceh.confirmed == [("doc-1", "11111111-1111-1111-1111-111111111111")]
     assert summary.processed_items == 1
@@ -125,6 +130,7 @@ def test_blocked_item_is_never_built_or_written():
         return {}
 
     summary = run_sync(ceh, transport, payload_factory, execute=True)  # type: ignore[arg-type]
+    assert transport.require_schema_lock_values == [True]
     assert calls == 0
     assert transport.writes == [] and ceh.confirmed == []
     assert summary.blocked_items == 1

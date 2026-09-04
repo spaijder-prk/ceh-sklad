@@ -23,6 +23,12 @@
     "stock_receipt": "REPLACE_FIELD_FROM_METADATA",
     "stock_writeoff": "REPLACE_FIELD_FROM_METADATA"
   },
+  "product_fields": {
+    "ref": "REPLACE_FIELD_FROM_METADATA",
+    "sku": "REPLACE_FIELD_FROM_METADATA",
+    "name": "REPLACE_FIELD_FROM_METADATA",
+    "unit_name": "REPLACE_FIELD_FROM_METADATA_OR_REMOVE_THIS_LINE"
+  },
   "price_fields": {
     "product_ref": "REPLACE_FIELD_OR_SAFE_PATH_FROM_METADATA",
     "price_type_ref": "REPLACE_FIELD_OR_SAFE_PATH_FROM_METADATA",

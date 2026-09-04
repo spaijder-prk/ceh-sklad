@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
@@ -56,6 +57,14 @@ class CehSkladClient:
         )
         response.raise_for_status()
         return [UnfOutboxItem.from_json(row) for row in response.json()]
+
+    def import_product(self, payload: dict[str, Any]) -> dict[str, Any]:
+        response = self._client.post("/api/v1/integration/1c/products", json=payload)
+        response.raise_for_status()
+        body = response.json()
+        if not isinstance(body, dict):
+            raise RuntimeError("ceh-sklad вернул неожиданный ответ импорта товара")
+        return dict(body)
 
     def confirm_single(self, profile: UnfProfile, item: UnfOutboxItem, external_1c_id: str) -> None:
         response = self._client.post(

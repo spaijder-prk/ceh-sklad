@@ -1,0 +1,276 @@
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import sys
+from dataclasses import dataclass
+from decimal import Decimal
+from pathlib import Path
+from typing import Any
+from uuid import UUID
+
+from .ceh_client import CehSkladClient
+from .odata import FreshODataClient, ODataEntitySet
+from .price_reader import FreshPriceReader, ProductPrices
+from .tenant_config import TenantMapping
+
+
+_FIELD_RE = re.compile(r"^[A-Za-zА-Яа-яЁё0-9_]+$")
+REQUIRED_PRODUCT_FIELDS = ("ref", "sku", "name")
+
+
+@dataclass(frozen=True)
+class ProductFieldMapping:
+    fields: dict[str, str]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ProductFieldMapping":
+        fields = {
+            str(key).strip(): str(value).strip()
+            for key, value in dict(data.get("product_fields", {})).items()
+        }
+        missing = [key for key in REQUIRED_PRODUCT_FIELDS if not fields.get(key)]
+        if missing:
+            raise ValueError("Не заданы product_fields: " + ", ".join(missing))
+        for semantic, actual in fields.items():
+            if semantic not in {*REQUIRED_PRODUCT_FIELDS, "unit_name"}:
+                raise ValueError(f"Неизвестный product_fields alias: {semantic}")
+            if not _FIELD_RE.fullmatch(actual):
+                raise ValueError(f"product_fields.{semantic} должен быть прямым OData-полем")
+        return cls(fields=fields)
+
+    @classmethod
+    def load(cls, path: str | Path) -> "ProductFieldMapping":
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("Tenant mapping должен быть JSON-объектом")
+        return cls.from_dict(raw)
+
+    def validate_against_metadata(self, entity_sets: list[ODataEntitySet], resource: str) -> None:
+        entity = next((item for item in entity_sets if item.name == resource), None)
+        if entity is None:
+            raise ValueError(f"В $metadata отсутствует каталог номенклатуры {resource}")
+        if not entity.properties:
+            return
+        missing = [field for field in self.fields.values() if field not in entity.properties]
+        if missing:
+            raise ValueError(
+                "В $metadata каталога номенклатуры отсутствуют поля: " + ", ".join(missing)
+            )
+
+
+@dataclass(frozen=True)
+class ProductImportPlan:
+    external_ref: str
+    sku: str
+    name: str
+    ready: bool
+    blocking_reasons: tuple[str, ...]
+    payload: dict[str, Any] | None
+
+
+@dataclass(frozen=True)
+class ProductImportSummary:
+    total: int
+    ready: int
+    blocked: int
+    imported: int
+    repeated: int
+    messages: tuple[str, ...]
+
+
+def _operation_key(payload: dict[str, Any]) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    payload_digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    ref_digest = hashlib.sha256(str(payload["external_1c_id"]).encode("utf-8")).hexdigest()
+    return f"unf-product:{ref_digest[:16]}:{payload_digest[:24]}"
+
+
+class FreshProductImporter:
+    """Планирует и выполняет импорт номенклатуры и двух видов цен из УНФ."""
+
+    def __init__(
+        self,
+        fresh_client: FreshODataClient,
+        ceh_client: CehSkladClient,
+        mapping: TenantMapping,
+        product_mapping: ProductFieldMapping,
+        *,
+        price_reader: FreshPriceReader | None = None,
+    ) -> None:
+        self.fresh_client = fresh_client
+        self.ceh_client = ceh_client
+        self.mapping = mapping
+        self.product_mapping = product_mapping
+        self.price_reader = price_reader or FreshPriceReader(fresh_client, mapping)
+
+    def plans(self, limit: int = 50) -> list[ProductImportPlan]:
+        fields = self.product_mapping.fields
+        selected = tuple(dict.fromkeys(fields.values()))
+        rows = self.fresh_client.list(
+            self.mapping.resources["products"],
+            top=max(1, min(limit, 100)),
+            select=selected,
+        )
+        result: list[ProductImportPlan] = []
+        for row in rows:
+            external_ref = str(row.get(fields["ref"], "")).strip()
+            sku = str(row.get(fields["sku"], "")).strip()
+            name = str(row.get(fields["name"], "")).strip()
+            unit_name = (
+                str(row.get(fields["unit_name"], "шт")).strip()
+                if fields.get("unit_name")
+                else "шт"
+            ) or "шт"
+            reasons: list[str] = []
+            try:
+                UUID(external_ref)
+            except (ValueError, AttributeError):
+                reasons.append("Ref_Key номенклатуры не является GUID")
+            if not sku or len(sku) > 80:
+                reasons.append("Некорректный артикул номенклатуры")
+            if len(name) < 2 or len(name) > 200:
+                reasons.append("Некорректное наименование номенклатуры")
+            if len(unit_name) > 30:
+                reasons.append("Наименование единицы измерения длиннее 30 символов")
+
+            prices = ProductPrices(retail=None, wholesale=None)
+            if not reasons:
+                prices = self.price_reader.product_prices(external_ref)
+                if prices.retail is None:
+                    reasons.append("Не найдена цена выбранного розничного вида")
+                if prices.wholesale is None:
+                    reasons.append("Не найдена цена выбранного оптового вида")
+
+            payload: dict[str, Any] | None = None
+            if not reasons:
+                payload = {
+                    "external_1c_id": external_ref,
+                    "sku": sku,
+                    "name": name,
+                    "unit_name": unit_name,
+                    "retail_price": str(Decimal(prices.retail)),
+                    "wholesale_price": str(Decimal(prices.wholesale)),
+                    "is_active": True,
+                }
+                payload["operation_key"] = _operation_key(payload)
+
+            result.append(
+                ProductImportPlan(
+                    external_ref=external_ref,
+                    sku=sku,
+                    name=name,
+                    ready=not reasons,
+                    blocking_reasons=tuple(reasons),
+                    payload=payload,
+                )
+            )
+        return result
+
+    def sync(self, *, limit: int = 50, execute: bool = False) -> ProductImportSummary:
+        plans = self.plans(limit)
+        ready = 0
+        blocked = 0
+        imported = 0
+        repeated = 0
+        messages: list[str] = []
+        for plan in plans:
+            if not plan.ready or plan.payload is None:
+                blocked += 1
+                messages.append(
+                    f"BLOCKED product {plan.sku or plan.external_ref}: "
+                    + "; ".join(plan.blocking_reasons)
+                )
+                continue
+            ready += 1
+            messages.append(
+                f"PLAN product {plan.sku}: external_1c_id={plan.external_ref}; "
+                f"retail={plan.payload['retail_price']}; wholesale={plan.payload['wholesale_price']}"
+            )
+            if execute:
+                response = self.ceh_client.import_product(plan.payload)
+                imported += 1
+                if bool(response.get("repeated", False)):
+                    repeated += 1
+                messages.append(
+                    f"IMPORTED product {plan.sku}: internal_id={response.get('internal_id')}; "
+                    f"repeated={bool(response.get('repeated', False))}"
+                )
+        return ProductImportSummary(
+            total=len(plans),
+            ready=ready,
+            blocked=blocked,
+            imported=imported,
+            repeated=repeated,
+            messages=tuple(messages),
+        )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Импорт номенклатуры и двух выбранных видов цен из 1С:УНФ в ceh-sklad"
+    )
+    parser.add_argument("--mapping", required=True, type=Path)
+    parser.add_argument("--ceh-url", default=os.getenv("CEH_API_URL"))
+    parser.add_argument("--limit", type=int, default=50)
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Разрешить запись в ceh-sklad; без флага выполняется dry-run",
+    )
+    parser.add_argument("--allow-http-ceh", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    ceh_key = os.getenv("CEH_1C_KEY")
+    fresh_login = os.getenv("UNF_FRESH_LOGIN")
+    fresh_password = os.getenv("UNF_FRESH_PASSWORD")
+    if not args.ceh_url:
+        raise SystemExit("Не задан --ceh-url или CEH_API_URL")
+    if not ceh_key:
+        raise SystemExit("Не задан CEH_1C_KEY")
+    if not fresh_login or not fresh_password:
+        raise SystemExit("Задайте UNF_FRESH_LOGIN и UNF_FRESH_PASSWORD через secret storage")
+
+    mapping = TenantMapping.load(args.mapping)
+    product_mapping = ProductFieldMapping.load(args.mapping)
+    with CehSkladClient(
+        args.ceh_url,
+        ceh_key,
+        allow_http=args.allow_http_ceh,
+    ) as ceh_client, FreshODataClient(
+        mapping.application_url,
+        fresh_login,
+        fresh_password,
+    ) as fresh_client:
+        ceh_client.profile()
+        metadata = fresh_client.entity_sets()
+        mapping.validate_against_metadata(metadata)
+        product_mapping.validate_against_metadata(metadata, mapping.resources["products"])
+        summary = FreshProductImporter(
+            fresh_client,
+            ceh_client,
+            mapping,
+            product_mapping,
+        ).sync(limit=max(1, min(args.limit, 100)), execute=args.execute)
+
+    for message in summary.messages:
+        print(message)
+    mode = "EXECUTE" if args.execute else "DRY-RUN"
+    print(
+        f"{mode}: товаров={summary.total}, готовы={summary.ready}, blocked={summary.blocked}, "
+        f"импортировано={summary.imported}, повторных={summary.repeated}"
+    )
+    if not args.execute:
+        print("Запись в ceh-sklad НЕ выполнялась. Для импорта нужен явный --execute.")
+    if summary.blocked:
+        sys.exit(3)
+
+
+if __name__ == "__main__":
+    main()

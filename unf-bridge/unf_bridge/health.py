@@ -11,6 +11,7 @@ from .ceh_client import CehSkladClient
 from .models import UnfOutboxItem
 from .odata import FreshODataClient, ODataEntitySet
 from .planner import build_plan
+from .tenant_audit import TenantAuditReport, audit_mapping_file
 from .tenant_config import TenantMapping
 
 
@@ -26,6 +27,9 @@ class BridgeHealth:
     blocked_items: int
     planned_documents: int
     post_documents: bool
+    mapping_audit_ready: bool
+    mapping_audit_errors: tuple[str, ...]
+    mapping_audit_warnings: tuple[str, ...]
 
 
 def check_health(
@@ -34,6 +38,7 @@ def check_health(
     mapping: TenantMapping,
     *,
     limit: int = 100,
+    mapping_audit: TenantAuditReport | None = None,
 ) -> BridgeHealth:
     """Read-only readiness check. Не создает и не подтверждает документы."""
     profile = ceh_client.profile()
@@ -52,8 +57,11 @@ def check_health(
             ready += 1
             planned_documents += len(plan.documents)
 
+    audit_ready = mapping_audit is None or mapping_audit.status == "ready"
+    audit_errors = mapping_audit.errors if mapping_audit is not None else ()
+    audit_warnings = mapping_audit.warnings if mapping_audit is not None else ()
     return BridgeHealth(
-        status="ready" if blocked == 0 else "degraded",
+        status="ready" if blocked == 0 and audit_ready else "degraded",
         contract_version=profile.contract_version,
         target_configuration=profile.target_configuration,
         provider=mapping.provider,
@@ -63,6 +71,9 @@ def check_health(
         blocked_items=blocked,
         planned_documents=planned_documents,
         post_documents=mapping.post_documents,
+        mapping_audit_ready=audit_ready,
+        mapping_audit_errors=audit_errors,
+        mapping_audit_warnings=audit_warnings,
     )
 
 
@@ -90,6 +101,7 @@ def main() -> None:
         raise SystemExit("Задайте UNF_FRESH_LOGIN и UNF_FRESH_PASSWORD через secret storage")
 
     mapping = TenantMapping.load(args.mapping)
+    mapping_audit = audit_mapping_file(args.mapping)
     with CehSkladClient(
         args.ceh_url,
         ceh_key,
@@ -104,6 +116,7 @@ def main() -> None:
             fresh_client,
             mapping,
             limit=max(1, min(args.limit, 100)),
+            mapping_audit=mapping_audit,
         )
 
     print(json.dumps(asdict(health), ensure_ascii=False, sort_keys=True))

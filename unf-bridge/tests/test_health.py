@@ -3,6 +3,7 @@ from decimal import Decimal
 from unf_bridge.health import check_health
 from unf_bridge.models import UnfLine, UnfOutboxItem, UnfProfile
 from unf_bridge.odata import ODataEntitySet
+from unf_bridge.tenant_audit import TenantAuditReport
 from unf_bridge.tenant_config import TenantMapping
 
 
@@ -114,6 +115,7 @@ def test_health_ready_is_read_only_summary():
     assert health.blocked_items == 0
     assert health.planned_documents == 1
     assert health.published_entity_sets == len(BASE["resources"])
+    assert health.mapping_audit_ready is True
 
 
 def test_health_degraded_when_outbox_contains_blocked_item():
@@ -125,3 +127,27 @@ def test_health_degraded_when_outbox_contains_blocked_item():
     assert health.status == "degraded"
     assert health.blocked_items == 1
     assert health.ready_items == 0
+
+
+def test_health_degraded_when_static_tenant_audit_is_blocked():
+    audit = TenantAuditReport(
+        status="blocked",
+        errors=("Не задан constants.cashbox_ref",),
+        warnings=("post_documents=false",),
+        payload_schema_count=5,
+        location_allowlist_count=2,
+        representative_count=1,
+        payer_mapping_count=1,
+        post_documents=False,
+    )
+    health = check_health(
+        FakeCeh([item()]),  # type: ignore[arg-type]
+        FakeFresh(),  # type: ignore[arg-type]
+        TenantMapping.from_dict(BASE),
+        mapping_audit=audit,
+    )
+    assert health.status == "degraded"
+    assert health.blocked_items == 0
+    assert health.mapping_audit_ready is False
+    assert health.mapping_audit_errors == ("Не задан constants.cashbox_ref",)
+    assert health.mapping_audit_warnings == ("post_documents=false",)

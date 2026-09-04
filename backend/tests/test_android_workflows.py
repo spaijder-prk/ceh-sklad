@@ -16,6 +16,18 @@ def test_android_instrumented_workflow_keeps_diagnostics_on_failure():
     assert "actions/upload-artifact@v4" in workflow
 
 
+def test_android_instrumented_workflow_runs_emulator_only_for_latest_android_change():
+    workflow = (ROOT / ".github/workflows/android-instrumented.yml").read_text(encoding="utf-8")
+
+    assert "fetch-depth: 2" in workflow
+    assert "github.event.pull_request.head.sha || github.sha" in workflow
+    assert "git diff --quiet HEAD^ HEAD -- android .github/workflows/android-instrumented.yml" in workflow
+    assert "run_smoke=false" in workflow
+    assert "run_smoke=true" in workflow
+    assert "if: needs.changes.outputs.run_smoke == 'true'" in workflow
+    assert "cancel-in-progress: true" in workflow
+
+
 def test_android_release_workflow_keeps_manifest_and_removes_keystore():
     workflow = (ROOT / ".github/workflows/android-release.yml").read_text(encoding="utf-8")
 

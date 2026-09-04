@@ -174,7 +174,6 @@ class RepresentativeStockBalance(Base):
 
 class MoneyPosting(Base):
     __tablename__ = "money_postings"
-    __table_args__ = (CheckConstraint("amount <> 0", name="ck_money_posting_nonzero_amount"),)
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     representative_id: Mapped[UUID] = mapped_column(Uuid, ForeignKey("representatives.id"), index=True)

@@ -42,6 +42,14 @@ class PriceType(StrEnum):
     WHOLESALE = "wholesale"
 
 
+def value_enum(enum_type):
+    return Enum(
+        enum_type,
+        values_callable=lambda members: [member.value for member in members],
+        native_enum=False,
+    )
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -53,7 +61,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     full_name: Mapped[str] = mapped_column(String(255))
-    role: Mapped[UserRole] = mapped_column(Enum(UserRole, native_enum=False), index=True)
+    role: Mapped[UserRole] = mapped_column(value_enum(UserRole), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -92,9 +100,9 @@ class StockDocument(Base):
     __tablename__ = "stock_documents"
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
-    document_type: Mapped[DocumentType] = mapped_column(Enum(DocumentType, native_enum=False), index=True)
+    document_type: Mapped[DocumentType] = mapped_column(value_enum(DocumentType), index=True)
     status: Mapped[DocumentStatus] = mapped_column(
-        Enum(DocumentStatus, native_enum=False), default=DocumentStatus.POSTED, index=True
+        value_enum(DocumentStatus), default=DocumentStatus.POSTED, index=True
     )
     external_id: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True, index=True)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -142,7 +150,7 @@ class MoneyPosting(Base):
     document_id: Mapped[UUID | None] = mapped_column(
         Uuid, ForeignKey("stock_documents.id"), nullable=True, index=True
     )
-    operation: Mapped[MoneyOperation] = mapped_column(Enum(MoneyOperation, native_enum=False), index=True)
+    operation: Mapped[MoneyOperation] = mapped_column(value_enum(MoneyOperation), index=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     external_id: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True, index=True)

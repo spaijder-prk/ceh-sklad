@@ -3,11 +3,36 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .models import PriceType
+from .models import PriceType, UserRole
 
 
 class ORMModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+
+class BootstrapAdminRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=8, max_length=128)
+    full_name: str = Field(min_length=1, max_length=255)
+
+
+class UserCreate(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=8, max_length=128)
+    full_name: str = Field(min_length=1, max_length=255)
+    role: UserRole
+
+
+class UserRead(ORMModel):
+    id: UUID
+    email: str
+    full_name: str
+    role: UserRole
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
 
 
 class WarehouseCreate(BaseModel):
@@ -24,12 +49,14 @@ class WarehouseRead(ORMModel):
 class RepresentativeCreate(BaseModel):
     code: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=255)
+    user_id: UUID | None = None
 
 
 class RepresentativeRead(ORMModel):
     id: UUID
     code: str
     name: str
+    user_id: UUID | None
 
 
 class ProductCreate(BaseModel):

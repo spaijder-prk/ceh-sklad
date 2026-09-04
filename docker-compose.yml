@@ -22,9 +22,10 @@ services:
       - ./backend:/app
     environment:
       CEH_DATABASE_URL: postgresql+psycopg://ceh:ceh@db:5432/ceh_sklad
-      CEH_AUTO_CREATE_SCHEMA: "true"
+      CEH_AUTO_CREATE_SCHEMA: "false"
+      CEH_JWT_SECRET: "local-development-secret-change-me"
     command: >
-      sh -c "pip install -e . && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+      sh -c "pip install -e . && alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     ports:
       - "8000:8000"
     depends_on:

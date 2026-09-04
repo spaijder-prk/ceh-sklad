@@ -8,6 +8,9 @@ class Settings(BaseSettings):
     api_prefix: str = "/api/v1"
     database_url: str = "sqlite:///./ceh_sklad.db"
     auto_create_schema: bool = True
+    jwt_secret: str = "change-me-in-production"
+    jwt_algorithm: str = "HS256"
+    access_token_minutes: int = 720
 
     model_config = SettingsConfigDict(
         env_file=".env",

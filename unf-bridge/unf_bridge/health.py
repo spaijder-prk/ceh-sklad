@@ -6,6 +6,7 @@ import os
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 from .catalog_import import ProductFieldMapping
 from .ceh_client import CehSkladClient
@@ -30,6 +31,10 @@ REFERENCE_CONSTANT_RESOURCES = {
 @dataclass(frozen=True)
 class BridgeHealth:
     status: str
+    backend_readiness_checked: bool
+    backend_ready: bool
+    backend_database: str | None
+    backend_schema_revision: str | None
     contract_version: str
     target_configuration: str
     provider: str
@@ -60,8 +65,26 @@ def check_health(
     product_mapping: ProductFieldMapping | None = None,
     location_mapping: LocationImportMapping | None = None,
     validate_reference_objects: bool = False,
+    backend_readiness: dict[str, Any] | None = None,
 ) -> BridgeHealth:
     """Read-only readiness check. Не создает и не подтверждает документы."""
+    backend_checked = backend_readiness is not None
+    backend_database = str(backend_readiness.get("database")) if backend_readiness and backend_readiness.get("database") is not None else None
+    backend_schema_revision = (
+        str(backend_readiness.get("schema_revision"))
+        if backend_readiness and backend_readiness.get("schema_revision") is not None
+        else None
+    )
+    backend_ready = (
+        not backend_checked
+        or (
+            backend_readiness is not None
+            and backend_readiness.get("status") == "ready"
+            and backend_database == "ok"
+            and bool(backend_schema_revision)
+        )
+    )
+
     profile = ceh_client.profile()
     entity_sets: list[ODataEntitySet] = fresh_client.entity_sets()
     mapping.validate_against_metadata(entity_sets)
@@ -126,7 +149,8 @@ def check_health(
     catalog_ready = not catalog_errors
     references_ready = not reference_errors
     is_ready = (
-        blocked == 0
+        backend_ready
+        and blocked == 0
         and audit_ready
         and not payload_errors
         and catalog_ready
@@ -134,6 +158,10 @@ def check_health(
     )
     return BridgeHealth(
         status="ready" if is_ready else "degraded",
+        backend_readiness_checked=backend_checked,
+        backend_ready=backend_ready,
+        backend_database=backend_database,
+        backend_schema_revision=backend_schema_revision,
         contract_version=profile.contract_version,
         target_configuration=profile.target_configuration,
         provider=mapping.provider,
@@ -191,6 +219,7 @@ def main() -> None:
         fresh_login,
         fresh_password,
     ) as fresh_client:
+        backend_readiness = ceh_client.readiness()
         health = check_health(
             ceh_client,
             fresh_client,
@@ -200,6 +229,7 @@ def main() -> None:
             product_mapping=product_mapping,
             location_mapping=location_mapping,
             validate_reference_objects=True,
+            backend_readiness=backend_readiness,
         )
 
     print(json.dumps(asdict(health), ensure_ascii=False, sort_keys=True))

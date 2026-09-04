@@ -38,6 +38,14 @@ class CehSkladClient:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
+    def readiness(self) -> dict[str, Any]:
+        response = self._client.get("/health/ready")
+        response.raise_for_status()
+        body = response.json()
+        if not isinstance(body, dict):
+            raise RuntimeError("ceh-sklad вернул неожиданный ответ readiness")
+        return dict(body)
+
     def profile(self) -> UnfProfile:
         response = self._client.get("/api/v1/integration/1c/unf/profile")
         response.raise_for_status()

@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import statistics
 import sys
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from decimal import Decimal
+from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
@@ -26,12 +28,125 @@ class RequestResult:
     error: str | None
 
 
+@dataclass(frozen=True)
+class LoadTestReport:
+    schema_version: int
+    mode: str
+    run_id: str | None
+    requests: int
+    concurrency: int
+    quantity: str
+    price_type: str
+    product_id: str
+    location_id: str
+    available_quantity: str
+    required_quantity: str
+    successes: int
+    failures: int
+    success_rate: float | None
+    wall_seconds: float | None
+    throughput_rps: float | None
+    latency_min_ms: float | None
+    latency_p50_ms: float | None
+    latency_p95_ms: float | None
+    latency_max_ms: float | None
+    idempotency_verified: bool
+    failure_samples: tuple[dict[str, object], ...]
+
+
 def percentile(values: list[float], fraction: float) -> float:
     if not values:
         return 0.0
     ordered = sorted(values)
     position = round((len(ordered) - 1) * fraction)
     return ordered[position]
+
+
+def build_execution_report(
+    *,
+    args: argparse.Namespace,
+    run_id: str,
+    available: Decimal,
+    results: list[RequestResult],
+    wall_seconds: float,
+    idempotency_verified: bool,
+) -> LoadTestReport:
+    successes = [row for row in results if 200 <= row.status_code < 300]
+    failures = [row for row in results if row not in successes]
+    latencies = [row.latency_ms for row in results]
+    count = len(results)
+    success_rate = (len(successes) / count * 100.0) if count else 0.0
+    throughput = count / wall_seconds if wall_seconds > 0 else 0.0
+
+    return LoadTestReport(
+        schema_version=1,
+        mode="execute",
+        run_id=run_id,
+        requests=args.requests,
+        concurrency=args.concurrency,
+        quantity=str(args.quantity),
+        price_type=args.price_type,
+        product_id=args.product_id,
+        location_id=args.location_id,
+        available_quantity=str(available),
+        required_quantity=str(args.quantity * args.requests),
+        successes=len(successes),
+        failures=len(failures),
+        success_rate=round(success_rate, 4),
+        wall_seconds=round(wall_seconds, 6),
+        throughput_rps=round(throughput, 4),
+        latency_min_ms=round(min(latencies), 3) if latencies else None,
+        latency_p50_ms=round(statistics.median(latencies), 3) if latencies else None,
+        latency_p95_ms=round(percentile(latencies, 0.95), 3) if latencies else None,
+        latency_max_ms=round(max(latencies), 3) if latencies else None,
+        idempotency_verified=idempotency_verified,
+        failure_samples=tuple(
+            {
+                "index": row.index,
+                "status_code": row.status_code,
+                "latency_ms": round(row.latency_ms, 3),
+                "error": row.error,
+            }
+            for row in failures[:10]
+        ),
+    )
+
+
+def build_dry_run_report(args: argparse.Namespace, available: Decimal) -> LoadTestReport:
+    return LoadTestReport(
+        schema_version=1,
+        mode="dry-run",
+        run_id=None,
+        requests=args.requests,
+        concurrency=args.concurrency,
+        quantity=str(args.quantity),
+        price_type=args.price_type,
+        product_id=args.product_id,
+        location_id=args.location_id,
+        available_quantity=str(available),
+        required_quantity=str(args.quantity * args.requests),
+        successes=0,
+        failures=0,
+        success_rate=None,
+        wall_seconds=None,
+        throughput_rps=None,
+        latency_min_ms=None,
+        latency_p50_ms=None,
+        latency_p95_ms=None,
+        latency_max_ms=None,
+        idempotency_verified=False,
+        failure_samples=(),
+    )
+
+
+def write_report(report: LoadTestReport, output: Path | None) -> None:
+    if output is None:
+        return
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        json.dumps(asdict(report), ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -47,6 +162,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--quantity", type=Decimal, default=Decimal("1"), help="Количество товара на одну продажу")
     parser.add_argument("--price-type", choices=("retail", "wholesale"), default="retail")
     parser.add_argument("--timeout", type=float, default=20.0, help="HTTP timeout в секундах")
+    parser.add_argument("--output", type=Path, help="Сохранить машинный JSON-отчет")
     parser.add_argument("--execute", action="store_true", help="Действительно провести продажи")
     return parser.parse_args()
 
@@ -166,9 +282,9 @@ async def verify_first_idempotency(
     args: argparse.Namespace,
     run_id: str,
     first: RequestResult,
-) -> None:
+) -> bool:
     if first.status_code // 100 != 2 or not first.response_id:
-        return
+        return False
 
     payload = {
         "representative_location_id": args.location_id,
@@ -184,6 +300,7 @@ async def verify_first_idempotency(
         raise RuntimeError(
             f"Идемпотентный повтор вернул другой document id: {first.response_id} -> {repeated_id}"
         )
+    return True
 
 
 async def main_async(args: argparse.Namespace) -> int:
@@ -198,7 +315,11 @@ async def main_async(args: argparse.Namespace) -> int:
         )
 
         if not args.execute:
+            report = build_dry_run_report(args, available)
+            write_report(report, args.output)
             print("DRY-RUN: продажи не отправлялись. Для реального staging-теста добавьте --execute.")
+            if args.output:
+                print(f"JSON-отчет: {args.output}")
             return 0
 
         run_id = uuid.uuid4().hex[:12]
@@ -214,26 +335,41 @@ async def main_async(args: argparse.Namespace) -> int:
 
         successes = [row for row in results if 200 <= row.status_code < 300]
         failures = [row for row in results if row not in successes]
-        latencies = [row.latency_ms for row in results]
-
+        idempotency_verified = False
         if successes:
-            await verify_first_idempotency(client, headers, args, run_id, successes[0])
+            idempotency_verified = await verify_first_idempotency(
+                client, headers, args, run_id, successes[0]
+            )
+
+        report = build_execution_report(
+            args=args,
+            run_id=run_id,
+            available=available,
+            results=results,
+            wall_seconds=wall_seconds,
+            idempotency_verified=idempotency_verified,
+        )
+        write_report(report, args.output)
 
         print(
-            f"Результат: success={len(successes)} failure={len(failures)} "
-            f"wall={wall_seconds:.2f}s throughput={len(results) / wall_seconds:.2f} req/s"
+            f"Результат: success={report.successes} failure={report.failures} "
+            f"success_rate={report.success_rate:.2f}% wall={report.wall_seconds:.2f}s "
+            f"throughput={report.throughput_rps:.2f} req/s"
         )
         print(
-            f"Latency ms: min={min(latencies):.1f} "
-            f"p50={statistics.median(latencies):.1f} "
-            f"p95={percentile(latencies, 0.95):.1f} "
-            f"max={max(latencies):.1f}"
+            f"Latency ms: min={report.latency_min_ms:.1f} "
+            f"p50={report.latency_p50_ms:.1f} "
+            f"p95={report.latency_p95_ms:.1f} "
+            f"max={report.latency_max_ms:.1f}"
         )
+        print(f"Идемпотентность первого успешного запроса: {'OK' if idempotency_verified else 'не проверена'}")
         for row in failures[:10]:
             print(
                 f"FAIL #{row.index}: status={row.status_code} "
                 f"latency={row.latency_ms:.1f}ms error={row.error}"
             )
+        if args.output:
+            print(f"JSON-отчет: {args.output}")
 
         return 0 if not failures else 1
 

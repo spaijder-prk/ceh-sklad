@@ -116,6 +116,7 @@ jobs:
           --requests "${{ inputs.requests }}"
           --concurrency "${{ inputs.concurrency }}"
           --quantity "${{ inputs.quantity }}"
+          --output "$RUNNER_TEMP/load-test-dry-run.json"
       - name: Выполнить реальные тестовые продажи
         if: ${{ inputs.execute_sales }}
         env:
@@ -131,4 +132,15 @@ jobs:
           --requests "${{ inputs.requests }}"
           --concurrency "${{ inputs.concurrency }}"
           --quantity "${{ inputs.quantity }}"
+          --output "$RUNNER_TEMP/load-test-execute.json"
           --execute
+      - name: Сохранить результаты load-test
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-load-test-results
+          path: |
+            ${{ runner.temp }}/load-test-dry-run.json
+            ${{ runner.temp }}/load-test-execute.json
+          if-no-files-found: warn
+          retention-days: 14

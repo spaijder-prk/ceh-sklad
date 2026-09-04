@@ -10,6 +10,7 @@ from pathlib import Path
 from .ceh_client import CehSkladClient
 from .models import UnfOutboxItem
 from .odata import FreshODataClient, ODataEntitySet
+from .operation_payloads import UnfOperationPayloadFactory
 from .planner import build_plan
 from .tenant_audit import TenantAuditReport, audit_mapping_file
 from .tenant_config import TenantMapping
@@ -26,6 +27,8 @@ class BridgeHealth:
     ready_items: int
     blocked_items: int
     planned_documents: int
+    payload_validated_documents: int
+    payload_validation_errors: tuple[str, ...]
     post_documents: bool
     mapping_audit_ready: bool
     mapping_audit_errors: tuple[str, ...]
@@ -46,22 +49,40 @@ def check_health(
     mapping.validate_against_metadata(entity_sets)
     items: list[UnfOutboxItem] = ceh_client.outbox(max(1, min(limit, 100)))
 
+    audit_ready = mapping_audit is None or mapping_audit.status == "ready"
+    audit_errors = mapping_audit.errors if mapping_audit is not None else ()
+    audit_warnings = mapping_audit.warnings if mapping_audit is not None else ()
+    payload_factory = UnfOperationPayloadFactory(mapping) if mapping_audit is not None and audit_ready else None
+
     ready = 0
     blocked = 0
     planned_documents = 0
+    payload_validated_documents = 0
+    payload_errors: list[str] = []
     for item in items:
         plan = build_plan(item)
         if plan.blocked:
             blocked += 1
-        else:
-            ready += 1
-            planned_documents += len(plan.documents)
+            continue
 
-    audit_ready = mapping_audit is None or mapping_audit.status == "ready"
-    audit_errors = mapping_audit.errors if mapping_audit is not None else ()
-    audit_warnings = mapping_audit.warnings if mapping_audit is not None else ()
+        planned_documents += len(plan.documents)
+        item_payload_ready = True
+        if payload_factory is not None:
+            for document in plan.documents:
+                try:
+                    payload_factory(item, document)
+                    payload_validated_documents += 1
+                except (ValueError, KeyError, TypeError) as exc:
+                    item_payload_ready = False
+                    payload_errors.append(f"{item.internal_id}: {exc}")
+        if item_payload_ready:
+            ready += 1
+        else:
+            blocked += 1
+
+    is_ready = blocked == 0 and audit_ready and not payload_errors
     return BridgeHealth(
-        status="ready" if blocked == 0 and audit_ready else "degraded",
+        status="ready" if is_ready else "degraded",
         contract_version=profile.contract_version,
         target_configuration=profile.target_configuration,
         provider=mapping.provider,
@@ -70,6 +91,8 @@ def check_health(
         ready_items=ready,
         blocked_items=blocked,
         planned_documents=planned_documents,
+        payload_validated_documents=payload_validated_documents,
+        payload_validation_errors=tuple(payload_errors),
         post_documents=mapping.post_documents,
         mapping_audit_ready=audit_ready,
         mapping_audit_errors=audit_errors,

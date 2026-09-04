@@ -67,6 +67,22 @@ class ProductCreate(BaseModel):
     wholesale_price: Decimal = Field(ge=0, decimal_places=2)
 
 
+class ProductUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    unit: str | None = Field(default=None, min_length=1, max_length=32)
+    retail_price: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+    wholesale_price: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+
+    @model_validator(mode="after")
+    def validate_changes(self):
+        if all(
+            value is None
+            for value in (self.name, self.unit, self.retail_price, self.wholesale_price)
+        ):
+            raise ValueError("Необходимо передать хотя бы одно изменяемое поле")
+        return self
+
+
 class ProductRead(ORMModel):
     id: UUID
     sku: str

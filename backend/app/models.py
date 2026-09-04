@@ -141,6 +141,34 @@ class StockPosting(Base):
     product: Mapped[Product] = relationship()
 
 
+class WarehouseStockBalance(Base):
+    __tablename__ = "warehouse_stock_balances"
+    __table_args__ = (
+        CheckConstraint("quantity >= 0", name="ck_warehouse_stock_balance_nonnegative"),
+    )
+
+    warehouse_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("warehouses.id"), primary_key=True
+    )
+    product_id: Mapped[UUID] = mapped_column(Uuid, ForeignKey("products.id"), primary_key=True, index=True)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(16, 3), default=Decimal("0"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class RepresentativeStockBalance(Base):
+    __tablename__ = "representative_stock_balances"
+    __table_args__ = (
+        CheckConstraint("quantity >= 0", name="ck_representative_stock_balance_nonnegative"),
+    )
+
+    representative_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("representatives.id"), primary_key=True
+    )
+    product_id: Mapped[UUID] = mapped_column(Uuid, ForeignKey("products.id"), primary_key=True, index=True)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(16, 3), default=Decimal("0"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class MoneyPosting(Base):
     __tablename__ = "money_postings"
     __table_args__ = (CheckConstraint("amount <> 0", name="ck_money_posting_nonzero_amount"),)

@@ -47,6 +47,11 @@ def create_access_token(user: User) -> str:
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
+def decode_access_token(token: str) -> UUID:
+    payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    return UUID(payload["sub"])
+
+
 def get_current_user(
     token: Annotated[str, Depends(oauth2_scheme)],
     session: Annotated[Session, Depends(get_session)],
@@ -57,8 +62,7 @@ def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-        user_id = UUID(payload["sub"])
+        user_id = decode_access_token(token)
     except (InvalidTokenError, KeyError, TypeError, ValueError) as exc:
         raise credentials_error from exc
 

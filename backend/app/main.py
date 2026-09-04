@@ -2,16 +2,18 @@ from contextlib import asynccontextmanager
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.security import OAuth2PasswordRequestForm
+from jwt import InvalidTokenError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import models  # noqa: F401
 from .config import settings
-from .db import Base, engine, get_session
+from .db import Base, SessionLocal, engine, get_session
 from .models import Product, Representative, User, UserRole, Warehouse
+from .realtime import stock_updates
 from .schemas import (
     BootstrapAdminRequest,
     IssueRequest,
@@ -19,6 +21,7 @@ from .schemas import (
     PaymentRequest,
     ProductCreate,
     ProductRead,
+    ProductUpdate,
     ReceiptRequest,
     RepresentativeBalanceLine,
     RepresentativeCreate,
@@ -37,6 +40,7 @@ from .schemas import (
 from .security import (
     authenticate_user,
     create_access_token,
+    decode_access_token,
     get_current_user,
     hash_password,
     normalize_email,
@@ -66,7 +70,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.2.0",
+    version="0.3.0",
     description="API складского учета, движения товара и расчетов с торговыми представителями.",
     lifespan=lifespan,
 )
@@ -109,9 +113,58 @@ def ensure_representative_scope(session: Session, user: User, representative_id:
             raise HTTPException(status_code=403, detail="Нет доступа к другому торговому представителю")
 
 
+def publish_state_change(
+    background_tasks: BackgroundTasks,
+    result: OperationResult,
+    *,
+    stock_changed: bool,
+    debt_changed: bool,
+) -> None:
+    message = {
+        "type": "state_changed",
+        "stock_changed": stock_changed,
+        "debt_changed": debt_changed,
+        "document_id": str(result.document_id) if result.document_id else None,
+        "money_posting_id": str(result.money_posting_id) if result.money_posting_id else None,
+    }
+    background_tasks.add_task(stock_updates.broadcast, message)
+
+
 @app.get("/health", tags=["Система"])
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.websocket(f"{settings.api_prefix}/ws/updates")
+async def updates_websocket(websocket: WebSocket):
+    authorization = websocket.headers.get("authorization", "")
+    if not authorization.startswith("Bearer "):
+        await websocket.close(code=4401)
+        return
+
+    try:
+        user_id = decode_access_token(authorization.removeprefix("Bearer ").strip())
+    except (InvalidTokenError, KeyError, TypeError, ValueError):
+        await websocket.close(code=4401)
+        return
+
+    with SessionLocal() as session:
+        user = session.get(User, user_id)
+        if user is None:
+            await websocket.close(code=4401)
+            return
+
+    await stock_updates.connect(websocket)
+    try:
+        await websocket.send_json({"type": "connected", "user_id": str(user_id)})
+        while True:
+            message = await websocket.receive_text()
+            if message == "ping":
+                await websocket.send_json({"type": "pong"})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        stock_updates.disconnect(websocket)
 
 
 @app.post(
@@ -266,7 +319,12 @@ def list_products(_: CurrentUserDep, session: SessionDep):
     status_code=201,
     tags=["Справочники"],
 )
-def create_product(payload: ProductCreate, _: AdminDep, session: SessionDep):
+def create_product(
+    payload: ProductCreate,
+    background_tasks: BackgroundTasks,
+    _: AdminDep,
+    session: SessionDep,
+):
     product = Product(**payload.model_dump())
     session.add(product)
     try:
@@ -275,6 +333,36 @@ def create_product(payload: ProductCreate, _: AdminDep, session: SessionDep):
         session.rollback()
         raise HTTPException(status_code=409, detail="Товар с таким артикулом уже существует") from exc
     session.refresh(product)
+    background_tasks.add_task(
+        stock_updates.broadcast,
+        {"type": "catalog_changed", "product_id": str(product.id)},
+    )
+    return product
+
+
+@app.patch(
+    f"{settings.api_prefix}/products/{{product_id}}",
+    response_model=ProductRead,
+    tags=["Справочники"],
+)
+def update_product(
+    product_id: UUID,
+    payload: ProductUpdate,
+    background_tasks: BackgroundTasks,
+    _: AdminDep,
+    session: SessionDep,
+):
+    product = session.get(Product, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="Товар не найден")
+    for field, value in payload.model_dump(exclude_none=True).items():
+        setattr(product, field, value)
+    session.commit()
+    session.refresh(product)
+    background_tasks.add_task(
+        stock_updates.broadcast,
+        {"type": "catalog_changed", "product_id": str(product.id)},
+    )
     return product
 
 
@@ -329,8 +417,15 @@ def get_representative_debt(
     status_code=201,
     tags=["Операции"],
 )
-def receipt(payload: ReceiptRequest, _: AdminDep, session: SessionDep):
-    return receive_goods(session, payload)
+def receipt(
+    payload: ReceiptRequest,
+    background_tasks: BackgroundTasks,
+    _: AdminDep,
+    session: SessionDep,
+):
+    result = receive_goods(session, payload)
+    publish_state_change(background_tasks, result, stock_changed=True, debt_changed=False)
+    return result
 
 
 @app.post(
@@ -339,8 +434,15 @@ def receipt(payload: ReceiptRequest, _: AdminDep, session: SessionDep):
     status_code=201,
     tags=["Операции"],
 )
-def issue(payload: IssueRequest, _: AdminDep, session: SessionDep):
-    return issue_to_representative(session, payload)
+def issue(
+    payload: IssueRequest,
+    background_tasks: BackgroundTasks,
+    _: AdminDep,
+    session: SessionDep,
+):
+    result = issue_to_representative(session, payload)
+    publish_state_change(background_tasks, result, stock_changed=True, debt_changed=False)
+    return result
 
 
 @app.post(
@@ -349,8 +451,15 @@ def issue(payload: IssueRequest, _: AdminDep, session: SessionDep):
     status_code=201,
     tags=["Операции"],
 )
-def transfer(payload: TransferRequest, _: AdminDep, session: SessionDep):
-    return transfer_between_warehouses(session, payload)
+def transfer(
+    payload: TransferRequest,
+    background_tasks: BackgroundTasks,
+    _: AdminDep,
+    session: SessionDep,
+):
+    result = transfer_between_warehouses(session, payload)
+    publish_state_change(background_tasks, result, stock_changed=True, debt_changed=False)
+    return result
 
 
 @app.post(
@@ -361,11 +470,14 @@ def transfer(payload: TransferRequest, _: AdminDep, session: SessionDep):
 )
 def representative_return(
     payload: ReturnRequest,
+    background_tasks: BackgroundTasks,
     user: AdminOrRepresentativeDep,
     session: SessionDep,
 ):
     ensure_representative_scope(session, user, payload.representative_id)
-    return return_from_representative(session, payload)
+    result = return_from_representative(session, payload)
+    publish_state_change(background_tasks, result, stock_changed=True, debt_changed=False)
+    return result
 
 
 @app.post(
@@ -374,9 +486,16 @@ def representative_return(
     status_code=201,
     tags=["Операции"],
 )
-def sale(payload: SaleRequest, user: AdminOrRepresentativeDep, session: SessionDep):
+def sale(
+    payload: SaleRequest,
+    background_tasks: BackgroundTasks,
+    user: AdminOrRepresentativeDep,
+    session: SessionDep,
+):
     ensure_representative_scope(session, user, payload.representative_id)
-    return register_sale(session, payload)
+    result = register_sale(session, payload)
+    publish_state_change(background_tasks, result, stock_changed=True, debt_changed=True)
+    return result
 
 
 @app.post(
@@ -385,5 +504,12 @@ def sale(payload: SaleRequest, user: AdminOrRepresentativeDep, session: SessionD
     status_code=201,
     tags=["Деньги"],
 )
-def payment(payload: PaymentRequest, _: AdminDep, session: SessionDep):
-    return register_payment(session, payload)
+def payment(
+    payload: PaymentRequest,
+    background_tasks: BackgroundTasks,
+    _: AdminDep,
+    session: SessionDep,
+):
+    result = register_payment(session, payload)
+    publish_state_change(background_tasks, result, stock_changed=False, debt_changed=True)
+    return result

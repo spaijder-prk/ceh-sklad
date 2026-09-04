@@ -13,9 +13,11 @@ from .models import (
     PriceType,
     Product,
     Representative,
+    RepresentativeStockBalance,
     StockDocument,
     StockPosting,
     Warehouse,
+    WarehouseStockBalance,
 )
 from .schemas import (
     IssueRequest,
@@ -50,28 +52,6 @@ def _must_exist(session: Session, model, object_id: UUID, label: str):
     return obj
 
 
-def _stock_quantity(
-    session: Session,
-    product_id: UUID,
-    *,
-    warehouse_id: UUID | None = None,
-    representative_id: UUID | None = None,
-) -> Decimal:
-    statement = (
-        select(func.coalesce(func.sum(StockPosting.quantity), 0))
-        .join(StockDocument, StockDocument.id == StockPosting.document_id)
-        .where(
-            StockPosting.product_id == product_id,
-            StockDocument.status == DocumentStatus.POSTED,
-        )
-    )
-    if warehouse_id is not None:
-        statement = statement.where(StockPosting.warehouse_id == warehouse_id)
-    if representative_id is not None:
-        statement = statement.where(StockPosting.representative_id == representative_id)
-    return Decimal(session.scalar(statement) or 0)
-
-
 def _group_quantities(lines) -> dict[UUID, Decimal]:
     grouped: dict[UUID, Decimal] = defaultdict(lambda: Decimal("0"))
     for line in lines:
@@ -88,11 +68,45 @@ def _check_products(session: Session, product_ids: set[UUID]) -> dict[UUID, Prod
     return result
 
 
+def _warehouse_balance_row(
+    session: Session,
+    warehouse_id: UUID,
+    product_id: UUID,
+    *,
+    lock: bool = False,
+) -> WarehouseStockBalance | None:
+    statement = select(WarehouseStockBalance).where(
+        WarehouseStockBalance.warehouse_id == warehouse_id,
+        WarehouseStockBalance.product_id == product_id,
+    )
+    if lock:
+        statement = statement.with_for_update()
+    return session.scalar(statement)
+
+
+def _representative_balance_row(
+    session: Session,
+    representative_id: UUID,
+    product_id: UUID,
+    *,
+    lock: bool = False,
+) -> RepresentativeStockBalance | None:
+    statement = select(RepresentativeStockBalance).where(
+        RepresentativeStockBalance.representative_id == representative_id,
+        RepresentativeStockBalance.product_id == product_id,
+    )
+    if lock:
+        statement = statement.with_for_update()
+    return session.scalar(statement)
+
+
 def _ensure_warehouse_stock(
     session: Session, warehouse_id: UUID, required: dict[UUID, Decimal]
 ) -> None:
-    for product_id, quantity in required.items():
-        available = _stock_quantity(session, product_id, warehouse_id=warehouse_id)
+    for product_id in sorted(required, key=str):
+        quantity = required[product_id]
+        row = _warehouse_balance_row(session, warehouse_id, product_id, lock=True)
+        available = Decimal(row.quantity) if row is not None else Decimal("0")
         if available < quantity:
             raise ConflictError(
                 f"Недостаточно товара {product_id} на складе: доступно {available}, требуется {quantity}"
@@ -102,12 +116,66 @@ def _ensure_warehouse_stock(
 def _ensure_representative_stock(
     session: Session, representative_id: UUID, required: dict[UUID, Decimal]
 ) -> None:
-    for product_id, quantity in required.items():
-        available = _stock_quantity(session, product_id, representative_id=representative_id)
+    for product_id in sorted(required, key=str):
+        quantity = required[product_id]
+        row = _representative_balance_row(session, representative_id, product_id, lock=True)
+        available = Decimal(row.quantity) if row is not None else Decimal("0")
         if available < quantity:
             raise ConflictError(
                 f"Недостаточно товара {product_id} у представителя: доступно {available}, требуется {quantity}"
             )
+
+
+def _change_warehouse_stock(
+    session: Session,
+    warehouse_id: UUID,
+    product_id: UUID,
+    delta: Decimal,
+) -> None:
+    row = _warehouse_balance_row(session, warehouse_id, product_id, lock=True)
+    if row is None:
+        if delta < 0:
+            raise ConflictError(f"Недостаточно товара {product_id} на складе")
+        session.add(
+            WarehouseStockBalance(
+                warehouse_id=warehouse_id,
+                product_id=product_id,
+                quantity=delta,
+            )
+        )
+        return
+
+    new_quantity = Decimal(row.quantity) + delta
+    if new_quantity < 0:
+        raise ConflictError(f"Операция приведет к отрицательному остатку товара {product_id} на складе")
+    row.quantity = new_quantity
+
+
+def _change_representative_stock(
+    session: Session,
+    representative_id: UUID,
+    product_id: UUID,
+    delta: Decimal,
+) -> None:
+    row = _representative_balance_row(session, representative_id, product_id, lock=True)
+    if row is None:
+        if delta < 0:
+            raise ConflictError(f"Недостаточно товара {product_id} у представителя")
+        session.add(
+            RepresentativeStockBalance(
+                representative_id=representative_id,
+                product_id=product_id,
+                quantity=delta,
+            )
+        )
+        return
+
+    new_quantity = Decimal(row.quantity) + delta
+    if new_quantity < 0:
+        raise ConflictError(
+            f"Операция приведет к отрицательному остатку товара {product_id} у представителя"
+        )
+    row.quantity = new_quantity
 
 
 def _find_existing_document(session: Session, external_id: str | None) -> StockDocument | None:
@@ -135,6 +203,9 @@ def receive_goods(session: Session, payload: ReceiptRequest) -> OperationResult:
     _must_exist(session, Warehouse, payload.warehouse_id, "Склад")
     grouped = _group_quantities(payload.lines)
     _check_products(session, set(grouped))
+
+    for product_id, quantity in grouped.items():
+        _change_warehouse_stock(session, payload.warehouse_id, product_id, quantity)
 
     document = _new_document(
         document_type=DocumentType.RECEIPT,
@@ -166,6 +237,10 @@ def issue_to_representative(session: Session, payload: IssueRequest) -> Operatio
     grouped = _group_quantities(payload.lines)
     _check_products(session, set(grouped))
     _ensure_warehouse_stock(session, payload.warehouse_id, grouped)
+
+    for product_id, quantity in grouped.items():
+        _change_warehouse_stock(session, payload.warehouse_id, product_id, -quantity)
+        _change_representative_stock(session, payload.representative_id, product_id, quantity)
 
     document = _new_document(
         document_type=DocumentType.ISSUE_TO_REPRESENTATIVE,
@@ -206,6 +281,10 @@ def transfer_between_warehouses(session: Session, payload: TransferRequest) -> O
     _check_products(session, set(grouped))
     _ensure_warehouse_stock(session, payload.source_warehouse_id, grouped)
 
+    for product_id, quantity in grouped.items():
+        _change_warehouse_stock(session, payload.source_warehouse_id, product_id, -quantity)
+        _change_warehouse_stock(session, payload.target_warehouse_id, product_id, quantity)
+
     document = _new_document(
         document_type=DocumentType.WAREHOUSE_TRANSFER,
         comment=payload.comment,
@@ -244,6 +323,10 @@ def return_from_representative(session: Session, payload: ReturnRequest) -> Oper
     grouped = _group_quantities(payload.lines)
     _check_products(session, set(grouped))
     _ensure_representative_stock(session, payload.representative_id, grouped)
+
+    for product_id, quantity in grouped.items():
+        _change_representative_stock(session, payload.representative_id, product_id, -quantity)
+        _change_warehouse_stock(session, payload.warehouse_id, product_id, quantity)
 
     document = _new_document(
         document_type=DocumentType.REPRESENTATIVE_RETURN,
@@ -291,6 +374,9 @@ def register_sale(session: Session, payload: SaleRequest) -> OperationResult:
     required = _group_quantities(payload.lines)
     products = _check_products(session, set(required))
     _ensure_representative_stock(session, payload.representative_id, required)
+
+    for product_id, quantity in required.items():
+        _change_representative_stock(session, payload.representative_id, product_id, -quantity)
 
     document = _new_document(
         document_type=DocumentType.SALE,
@@ -355,7 +441,6 @@ def register_payment(session: Session, payload: PaymentRequest) -> OperationResu
 
 
 def warehouse_balances(session: Session, warehouse_id: UUID | None = None) -> list[WarehouseBalanceLine]:
-    quantity_sum = func.sum(StockPosting.quantity)
     statement = (
         select(
             Warehouse.id,
@@ -367,14 +452,11 @@ def warehouse_balances(session: Session, warehouse_id: UUID | None = None) -> li
             Product.unit,
             Product.retail_price,
             Product.wholesale_price,
-            quantity_sum,
+            WarehouseStockBalance.quantity,
         )
-        .join(StockPosting, StockPosting.warehouse_id == Warehouse.id)
-        .join(Product, Product.id == StockPosting.product_id)
-        .join(StockDocument, StockDocument.id == StockPosting.document_id)
-        .where(StockDocument.status == DocumentStatus.POSTED)
-        .group_by(Warehouse.id, Product.id)
-        .having(quantity_sum != 0)
+        .join(WarehouseStockBalance, WarehouseStockBalance.warehouse_id == Warehouse.id)
+        .join(Product, Product.id == WarehouseStockBalance.product_id)
+        .where(WarehouseStockBalance.quantity != 0)
         .order_by(Warehouse.name, Product.name)
     )
     if warehouse_id is not None:
@@ -400,7 +482,6 @@ def warehouse_balances(session: Session, warehouse_id: UUID | None = None) -> li
 def representative_balances(
     session: Session, representative_id: UUID | None = None
 ) -> list[RepresentativeBalanceLine]:
-    quantity_sum = func.sum(StockPosting.quantity)
     statement = (
         select(
             Representative.id,
@@ -412,14 +493,14 @@ def representative_balances(
             Product.unit,
             Product.retail_price,
             Product.wholesale_price,
-            quantity_sum,
+            RepresentativeStockBalance.quantity,
         )
-        .join(StockPosting, StockPosting.representative_id == Representative.id)
-        .join(Product, Product.id == StockPosting.product_id)
-        .join(StockDocument, StockDocument.id == StockPosting.document_id)
-        .where(StockDocument.status == DocumentStatus.POSTED)
-        .group_by(Representative.id, Product.id)
-        .having(quantity_sum != 0)
+        .join(
+            RepresentativeStockBalance,
+            RepresentativeStockBalance.representative_id == Representative.id,
+        )
+        .join(Product, Product.id == RepresentativeStockBalance.product_id)
+        .where(RepresentativeStockBalance.quantity != 0)
         .order_by(Representative.name, Product.name)
     )
     if representative_id is not None:

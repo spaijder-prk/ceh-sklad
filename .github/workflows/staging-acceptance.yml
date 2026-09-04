@@ -67,6 +67,27 @@ jobs:
           case "$BASE_URL" in https://*) ;; *) echo "base_url должен использовать HTTPS"; exit 2 ;; esac
           test -n "$REP_LOGIN" || { echo "Не задан CEH_STAGING_REP_LOGIN"; exit 2; }
           test -n "$REP_PASSWORD" || { echo "Не задан CEH_STAGING_REP_PASSWORD"; exit 2; }
+      - name: Выполнить release preflight
+        env:
+          CEH_STAGING_1C_KEY: ${{ secrets.CEH_STAGING_1C_KEY }}
+          REQUIRE_UNF_READY: ${{ inputs.require_unf_ready }}
+        run: |
+          args=(
+            --base-url "${{ inputs.base_url }}"
+            --expected-schema-revision "20260904_09"
+            --output "$RUNNER_TEMP/staging-release-preflight.json"
+          )
+          if [ "$REQUIRE_UNF_READY" = "true" ]; then
+            args+=(--require-unf-ready)
+          fi
+          python scripts/release_preflight.py "${args[@]}"
+      - name: Сохранить release preflight
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-release-preflight
+          path: ${{ runner.temp }}/staging-release-preflight.json
+          if-no-files-found: ignore
       - name: Выполнить read-only staging smoke
         env:
           CEH_STAGING_REP_LOGIN: ${{ secrets.CEH_STAGING_REP_LOGIN }}

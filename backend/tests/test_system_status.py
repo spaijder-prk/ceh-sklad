@@ -93,7 +93,7 @@ async def test_system_status_reports_operational_counters_and_checks_role(sessio
 
     assert admin_response.status_code == 200
     body = admin_response.json()
-    assert body["schema_revision"] == "20260903_08"
+    assert body["schema_revision"] == "20260904_09"
     assert body["integration_1c_configured"] is True
     assert body["pending_1c_stock_documents"] == 1
     assert body["pending_1c_cash_handovers"] == 1

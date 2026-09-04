@@ -13,6 +13,7 @@ from uuid import UUID
 
 from .ceh_client import CehSkladClient
 from .odata import FreshODataClient, ODataEntitySet
+from .schema_lock import validate_metadata_schema_lock
 from .tenant_config import TenantMapping
 
 
@@ -219,7 +220,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--mapping", required=True, type=Path)
     parser.add_argument("--ceh-url", default=os.getenv("CEH_API_URL"))
-    parser.add_argument("--execute", action="store_true")
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Разрешить запись в ceh-sklad; требует принятого schema lock",
+    )
     parser.add_argument("--allow-http-ceh", action="store_true")
     return parser.parse_args()
 
@@ -250,6 +255,12 @@ def main() -> None:
         ceh_client.profile()
         metadata = fresh_client.entity_sets()
         mapping.validate_against_metadata(metadata)
+        validate_metadata_schema_lock(
+            mapping.application_url,
+            metadata,
+            mapping.expected_metadata_structure_sha256,
+            require_schema_lock=args.execute,
+        )
         location_mapping.validate_against_metadata(metadata, mapping.resources["warehouses"])
         summary = FreshLocationImporter(
             fresh_client,

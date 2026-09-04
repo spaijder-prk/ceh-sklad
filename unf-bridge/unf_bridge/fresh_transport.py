@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .evidence import metadata_structure_sha256
 from .odata import FreshODataClient
+from .schema_lock import validate_metadata_schema_lock
 from .tenant_config import DOCUMENT_RESOURCES, TenantMapping
 
 
@@ -18,7 +18,7 @@ class FreshTransport:
     """Идемпотентная низкоуровневая запись документов в 1С:Фреш.
 
     Формирование бизнес-реквизитов документа остаётся отдельным mapping-слоем.
-    Transport отвечает только за проверку metadata, schema lock, поиск по
+    Transport отвечает только за проверку metadata/schema lock, поиск по
     устойчивому ключу, create и опциональное проведение.
     """
 
@@ -29,23 +29,12 @@ class FreshTransport:
     def validate_configuration(self, *, require_schema_lock: bool = False) -> str:
         entity_sets = self.client.entity_sets()
         self.mapping.validate_against_metadata(entity_sets)
-        current_digest = metadata_structure_sha256(
+        return validate_metadata_schema_lock(
             self.mapping.application_url,
             entity_sets,
+            self.mapping.expected_metadata_structure_sha256,
+            require_schema_lock=require_schema_lock,
         )
-        expected_digest = self.mapping.expected_metadata_structure_sha256
-
-        if expected_digest is not None and expected_digest != current_digest:
-            raise ValueError(
-                "Schema lock УНФ не совпадает с текущей $metadata: "
-                f"ожидался {expected_digest}, получен {current_digest}"
-            )
-        if require_schema_lock and expected_digest is None:
-            raise ValueError(
-                "Для записи в УНФ требуется expected_metadata_structure_sha256 "
-                "из принятого metadata snapshot"
-            )
-        return current_digest
 
     def find_document(self, alias: str, external_key: str) -> dict[str, Any] | None:
         if alias not in DOCUMENT_RESOURCES:

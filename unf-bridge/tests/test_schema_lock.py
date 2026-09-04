@@ -110,7 +110,7 @@ def test_schema_lock_normalizes_valid_sha256_and_rejects_invalid_value():
 def test_transport_allows_discovery_without_lock_but_blocks_execute():
     transport = FreshTransport(FakeFresh(), TenantMapping.from_dict(BASE))  # type: ignore[arg-type]
     assert len(transport.validate_configuration()) == 64
-    with pytest.raises(ValueError, match="Для записи в УНФ требуется"):
+    with pytest.raises(ValueError, match="Для автоматической записи требуется"):
         transport.validate_configuration(require_schema_lock=True)
 
 

@@ -108,9 +108,9 @@ async def archive_product(
     """Атомарно архивирует товар с нулевым остатком и идемпотентным operation key."""
     payload_hash = _archive_payload_hash(external_1c_id)
     log = await session.scalar(
-        select(IntegrationExchangeLog).where(
-            IntegrationExchangeLog.operation_key == payload.operation_key
-        )
+        select(IntegrationExchangeLog)
+        .where(IntegrationExchangeLog.operation_key == payload.operation_key)
+        .with_for_update()
     )
     if log is not None:
         if (

@@ -15,6 +15,7 @@ import okhttp3.WebSocket
 import retrofit2.HttpException
 import ru.ceh.sklad.data.CehRepository
 import ru.ceh.sklad.data.DocumentDto
+import ru.ceh.sklad.data.MoneyPostingDto
 import ru.ceh.sklad.data.QuantityLineDto
 import ru.ceh.sklad.data.RepresentativeBalanceDto
 import ru.ceh.sklad.data.RepresentativeDto
@@ -36,6 +37,7 @@ data class AppUiState(
     val representativeBalances: List<RepresentativeBalanceDto> = emptyList(),
     val debt: BigDecimal? = null,
     val documents: List<DocumentDto> = emptyList(),
+    val moneyPostings: List<MoneyPostingDto> = emptyList(),
     val pendingOperations: Int = 0,
     val failedOperations: Int = 0,
     val realtimeActive: Boolean = false,
@@ -306,6 +308,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 representativeBalances = dashboard.representativeBalances,
                 debt = dashboard.debt,
                 documents = dashboard.documents,
+                moneyPostings = dashboard.moneyPostings,
                 pendingOperations = queue.pending,
                 failedOperations = queue.failed,
                 error = null,

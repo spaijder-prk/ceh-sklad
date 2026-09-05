@@ -251,6 +251,24 @@ private fun DashboardScreen(
                 }
                 item {
                     Spacer(Modifier.height(8.dp))
+                    Text("Деньги и расчеты", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "Продажи, подтвержденные сдачи денег и корректировки",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                if (state.moneyPostings.isEmpty()) {
+                    item { EmptyCard("Денежных операций пока нет") }
+                } else {
+                    items(
+                        items = state.moneyPostings,
+                        key = { "money:${it.id}" },
+                    ) { posting ->
+                        RepresentativeMoneyCard(posting)
+                    }
+                }
+                item {
+                    Spacer(Modifier.height(8.dp))
                     Text("История операций", style = MaterialTheme.typography.titleLarge)
                     Text(
                         "Последние операции по вашему товару",

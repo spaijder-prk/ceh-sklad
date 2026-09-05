@@ -12,13 +12,21 @@ from .services import ConflictError, NotFoundError
 REVERSAL_PREFIX = "reverse-payment-"
 
 
-def money_journal(session: Session, limit: int = 100) -> list[MoneyPostingRead]:
-    rows = session.execute(
+def money_journal(
+    session: Session,
+    limit: int = 100,
+    representative_id: UUID | None = None,
+) -> list[MoneyPostingRead]:
+    statement = (
         select(MoneyPosting, Representative)
         .join(Representative, Representative.id == MoneyPosting.representative_id)
         .order_by(MoneyPosting.created_at.desc(), MoneyPosting.id.desc())
         .limit(limit)
-    ).all()
+    )
+    if representative_id is not None:
+        statement = statement.where(MoneyPosting.representative_id == representative_id)
+
+    rows = session.execute(statement).all()
     reversal_ids = set(
         session.scalars(
             select(MoneyPosting.external_id).where(

@@ -83,6 +83,20 @@ data class DocumentDto(
     val lines: List<DocumentLineDto>,
 )
 
+data class MoneyPostingDto(
+    val id: String,
+    @SerializedName("representative_id") val representativeId: String,
+    @SerializedName("representative_code") val representativeCode: String,
+    @SerializedName("representative_name") val representativeName: String,
+    @SerializedName("document_id") val documentId: String?,
+    val operation: String,
+    val amount: BigDecimal,
+    val comment: String?,
+    @SerializedName("external_id") val externalId: String?,
+    @SerializedName("created_at") val createdAt: String,
+    val reversed: Boolean,
+)
+
 data class QuantityLineDto(
     @SerializedName("product_id") val productId: String,
     val quantity: BigDecimal,
@@ -123,4 +137,5 @@ data class DashboardData(
     val representativeBalances: List<RepresentativeBalanceDto>,
     val debt: BigDecimal?,
     val documents: List<DocumentDto>,
+    val moneyPostings: List<MoneyPostingDto>,
 )

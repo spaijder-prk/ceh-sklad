@@ -11,6 +11,8 @@ from .document_service import cancel_document, document_journal
 from .integration_api import router as integration_router
 from .models import Representative, User, UserRole
 from .money_api import router as money_router
+from .money_schemas import MoneyPostingRead
+from .money_service import money_journal
 from .realtime import stock_updates
 from .reports_api import router as reports_router
 from .security import require_roles
@@ -25,6 +27,18 @@ AdminOrManagerDep = Annotated[
 RepresentativeDep = Annotated[
     User, Depends(require_roles(UserRole.REPRESENTATIVE))
 ]
+
+
+def representative_for_user(session: Session, user: User) -> Representative:
+    representative = session.scalar(
+        select(Representative).where(Representative.user_id == user.id)
+    )
+    if representative is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Учетная запись не привязана к торговому представителю",
+        )
+    return representative
 
 
 @router.get("/documents", response_model=list[DocumentRead])
@@ -42,15 +56,18 @@ def list_my_documents(
     session: SessionDep,
     limit: int = Query(default=30, ge=1, le=100),
 ):
-    representative = session.scalar(
-        select(Representative).where(Representative.user_id == user.id)
-    )
-    if representative is None:
-        raise HTTPException(
-            status_code=403,
-            detail="Учетная запись не привязана к торговому представителю",
-        )
+    representative = representative_for_user(session, user)
     return document_journal(session, limit, representative.id)
+
+
+@router.get("/my/money-postings", response_model=list[MoneyPostingRead])
+def list_my_money_postings(
+    user: RepresentativeDep,
+    session: SessionDep,
+    limit: int = Query(default=30, ge=1, le=100),
+):
+    representative = representative_for_user(session, user)
+    return money_journal(session, limit, representative.id)
 
 
 @router.post(

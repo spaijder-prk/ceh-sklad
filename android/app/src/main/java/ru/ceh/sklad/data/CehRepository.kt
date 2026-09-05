@@ -71,6 +71,7 @@ class CehRepository(context: Context) {
                 representativeBalances = emptyList(),
                 debt = null,
                 documents = emptyList(),
+                moneyPostings = emptyList(),
             )
         }
 
@@ -79,6 +80,7 @@ class CehRepository(context: Context) {
         val ownBalances = api.representativeBalances(representative.id)
         val debt = api.representativeDebt(representative.id).debt
         val documents = api.myDocuments()
+        val moneyPostings = api.myMoneyPostings()
 
         return DashboardData(
             user = user,
@@ -88,6 +90,7 @@ class CehRepository(context: Context) {
             representativeBalances = ownBalances,
             debt = debt,
             documents = documents,
+            moneyPostings = moneyPostings,
         )
     }
 

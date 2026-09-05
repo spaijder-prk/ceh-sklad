@@ -39,9 +39,10 @@ interface CehApi {
     ): RepresentativeDebtDto
 
     @GET("api/v1/my/documents")
-    suspend fun myDocuments(
-        @Query("limit") limit: Int = 30,
-    ): List<DocumentDto>
+    suspend fun myDocuments(): List<DocumentDto>
+
+    @GET("api/v1/my/money-postings")
+    suspend fun myMoneyPostings(): List<MoneyPostingDto>
 
     @POST("api/v1/operations/sale")
     suspend fun registerSale(@Body request: SaleRequestDto): OperationResultDto

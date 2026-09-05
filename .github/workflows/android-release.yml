@@ -9,24 +9,27 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   release:
-    name: Собрать и проверить подписанный APK
+    name: Собрать и опубликовать подписанный Android release
     runs-on: ubuntu-latest
     steps:
       - name: Получить код
         uses: actions/checkout@v4
+
       - name: Установить Java
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
+
       - name: Установить Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
+
       - name: Проверить URL и наличие release secrets
         env:
           API_BASE_URL: ${{ inputs.api_base_url }}
@@ -50,22 +53,32 @@ jobs:
           test -n "$KEYSTORE_PASSWORD" || { echo "Не задан CEH_ANDROID_KEYSTORE_PASSWORD"; exit 2; }
           test -n "$KEY_ALIAS" || { echo "Не задан CEH_ANDROID_KEY_ALIAS"; exit 2; }
           test -n "$KEY_PASSWORD" || { echo "Не задан CEH_ANDROID_KEY_PASSWORD"; exit 2; }
+
       - name: Подготовить keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.CEH_ANDROID_KEYSTORE_BASE64 }}
         run: echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/ceh-sklad-release.keystore"
-      - name: Собрать подписанный release APK
+
+      - name: Собрать подписанные APK и AAB
         env:
           CEH_ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/ceh-sklad-release.keystore
           CEH_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.CEH_ANDROID_KEYSTORE_PASSWORD }}
           CEH_ANDROID_KEY_ALIAS: ${{ secrets.CEH_ANDROID_KEY_ALIAS }}
           CEH_ANDROID_KEY_PASSWORD: ${{ secrets.CEH_ANDROID_KEY_PASSWORD }}
-        run: gradle -p android :app:assembleRelease -PCEH_API_BASE_URL="${{ inputs.api_base_url }}" --stacktrace
-      - name: Проверить подпись APK
+        run: >-
+          gradle -p android
+          :app:assembleRelease
+          :app:bundleRelease
+          -PCEH_API_BASE_URL="${{ inputs.api_base_url }}"
+          --stacktrace
+
+      - name: Проверить подписи
         run: |
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
           test -n "$APKSIGNER"
-          "$APKSIGNER" verify --verbose android/app/build/outputs/apk/release/app-release.apk
+          "$APKSIGNER" verify --verbose --print-certs android/app/build/outputs/apk/release/app-release.apk
+          jarsigner -verify android/app/build/outputs/bundle/release/app-release.aab
+
       - name: Сформировать release manifest
         env:
           API_BASE_URL: ${{ inputs.api_base_url }}
@@ -78,15 +91,80 @@ jobs:
             --api-base-url "$API_BASE_URL" \
             --apksigner "$APKSIGNER" \
             --output "$RUNNER_TEMP/android-release-manifest.json"
-      - name: Сохранить подписанный APK и manifest
+
+      - name: Подготовить постоянные файлы релиза
+        id: release_meta
+        run: |
+          set -Eeuo pipefail
+          VERSION_NAME="$(python - <<'PY'
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path('android/app/build/outputs/apk/release/output-metadata.json').read_text())
+          print(data['elements'][0]['versionName'])
+          PY
+          )"
+          if ! [[ "$VERSION_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Некорректный Android versionName: $VERSION_NAME" >&2
+            exit 2
+          fi
+
+          RELEASE_TAG="android-v${VERSION_NAME}"
+          RELEASE_DIR="$RUNNER_TEMP/android-release"
+          mkdir -p "$RELEASE_DIR"
+          cp android/app/build/outputs/apk/release/app-release.apk \
+            "$RELEASE_DIR/ceh-sklad-${VERSION_NAME}.apk"
+          cp android/app/build/outputs/bundle/release/app-release.aab \
+            "$RELEASE_DIR/ceh-sklad-${VERSION_NAME}.aab"
+          cp "$RUNNER_TEMP/android-release-manifest.json" \
+            "$RELEASE_DIR/android-release-manifest.json"
+          (
+            cd "$RELEASE_DIR"
+            sha256sum "ceh-sklad-${VERSION_NAME}.apk" \
+              "ceh-sklad-${VERSION_NAME}.aab" \
+              android-release-manifest.json > SHA256SUMS.txt
+          )
+
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "release_dir=$RELEASE_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Проверить уникальность версии
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_meta.outputs.release_tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG уже существует. Увеличьте Android versionName/versionCode перед новой публикацией." >&2
+            exit 2
+          fi
+
+      - name: Сохранить CI artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ceh-sklad-release-apk
-          path: |
-            android/app/build/outputs/apk/release/app-release.apk
-            ${{ runner.temp }}/android-release-manifest.json
+          name: ceh-sklad-release-${{ steps.release_meta.outputs.version_name }}
+          path: ${{ steps.release_meta.outputs.release_dir }}/*
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
+
+      - name: Опубликовать GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_meta.outputs.release_tag }}
+          VERSION_NAME: ${{ steps.release_meta.outputs.version_name }}
+          RELEASE_DIR: ${{ steps.release_meta.outputs.release_dir }}
+          API_BASE_URL: ${{ inputs.api_base_url }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            "$RELEASE_DIR/ceh-sklad-${VERSION_NAME}.apk" \
+            "$RELEASE_DIR/ceh-sklad-${VERSION_NAME}.aab" \
+            "$RELEASE_DIR/android-release-manifest.json" \
+            "$RELEASE_DIR/SHA256SUMS.txt" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Цех Склад Android ${VERSION_NAME}" \
+            --notes "Подписанный Android release Цех Склад. Backend: ${API_BASE_URL}. Исходный commit: ${GITHUB_SHA}. Контрольные суммы и параметры подписи находятся в приложенных manifest/SHA256SUMS."
+
       - name: Удалить временный keystore
         if: ${{ always() }}
         run: rm -f "$RUNNER_TEMP/ceh-sklad-release.keystore"

@@ -17,6 +17,20 @@ services:
       retries: 10
       start_period: 10s
 
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: >
+      sh -c 'exec redis-server --requirepass "$$(cat /run/secrets/redis_password)" --appendonly no --save ""'
+    secrets:
+      - redis_password
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_password)\" ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
   backend:
     build:
       context: ./backend
@@ -26,13 +40,18 @@ services:
       POSTGRES_PORT: "5432"
       POSTGRES_DB: "${POSTGRES_DB:-ceh_sklad}"
       POSTGRES_USER: "${POSTGRES_USER:-ceh}"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
       CEH_ACCESS_TOKEN_MINUTES: "${CEH_ACCESS_TOKEN_MINUTES:-720}"
     secrets:
       - db_password
       - jwt_secret
       - integration_api_key
+      - redis_password
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test:
@@ -71,6 +90,8 @@ secrets:
     file: "${CEH_JWT_SECRET_FILE:?Укажите CEH_JWT_SECRET_FILE}"
   integration_api_key:
     file: "${CEH_INTEGRATION_API_KEY_FILE:?Укажите CEH_INTEGRATION_API_KEY_FILE}"
+  redis_password:
+    file: "${CEH_REDIS_PASSWORD_FILE:?Укажите CEH_REDIS_PASSWORD_FILE}"
   tls_fullchain:
     file: "${CEH_TLS_FULLCHAIN_FILE:?Укажите CEH_TLS_FULLCHAIN_FILE}"
   tls_privkey:

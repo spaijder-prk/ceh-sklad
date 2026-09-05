@@ -26,6 +26,16 @@ class RealtimeTicketResponse(BaseModel):
     expires_in: int
 
 
+@router.on_event("startup")
+async def start_realtime_broker() -> None:
+    await stock_updates.start()
+
+
+@router.on_event("shutdown")
+async def stop_realtime_broker() -> None:
+    await stock_updates.stop()
+
+
 @router.post("/auth/ws-ticket", response_model=RealtimeTicketResponse)
 def issue_browser_ticket(user: AdminOrManagerDep):
     return RealtimeTicketResponse(

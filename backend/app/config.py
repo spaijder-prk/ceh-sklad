@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_minutes: int = 720
     integration_api_key: str | None = None
+    redis_url: str | None = None
+    redis_channel: str = "ceh-sklad:realtime"
 
     model_config = SettingsConfigDict(
         env_file=".env",

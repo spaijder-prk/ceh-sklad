@@ -20,8 +20,11 @@
 - управленческие отчеты;
 - WebSocket-события по остаткам, задолженности и каталогу;
 - отдельный одноразовый WebSocket-ticket для браузера;
+- Redis Pub/Sub fan-out для real-time между несколькими экземплярами backend;
 - Alembic-миграции, PostgreSQL/SQLite, pytest и Ruff;
-- защищенный API интеграции с 1С.
+- защищенный API интеграции с 1С;
+- production Docker-контур с PostgreSQL, Redis, Nginx/TLS и Docker secrets;
+- эксплуатационные скрипты резервного копирования и восстановления PostgreSQL.
 
 ### Android
 
@@ -58,6 +61,7 @@
 - единый браузерный WebSocket с короткоживущим одноразовым ticket;
 - real-time обновление обзора, журналов и отчетов;
 - резервное REST-обновление раз в 60 секунд при отсутствии события;
+- production-сборка в Nginx с HTTPS/reverse proxy;
 - адаптивная верстка и отдельная CI-сборка.
 
 ### Интеграция с 1С
@@ -80,7 +84,8 @@
 - `backend/` — FastAPI, SQLAlchemy, Alembic и бизнес-логика;
 - `android/` — Android-приложение торгового представителя;
 - `admin-web/` — веб-панель администратора и руководителя;
-- `docs/` — архитектура, правила учета и интеграция.
+- `ops/` — эксплуатационные скрипты;
+- `docs/` — архитектура, правила учета, production и интеграция.
 
 ## Быстрый запуск backend
 
@@ -168,27 +173,37 @@ Content-Type: application/json
 
 ## Real-time
 
-Android подключается к:
+Android подключается к `/api/v1/ws/updates` и передает `Authorization: Bearer <access-token>`.
 
-```text
-/api/v1/ws/updates
+Браузер сначала получает короткоживущий одноразовый ticket через `POST /api/v1/auth/ws-ticket`, затем подключается к `/api/v1/ws/browser-updates?ticket=<ticket>`. Основной JWT не попадает в URL WebSocket.
+
+При заданном `CEH_REDIS_URL` backend публикует события через общий Redis-канал, поэтому WebSocket-клиенты разных экземпляров backend получают одинаковые изменения. Без Redis сохраняется локальный in-memory режим для разработки.
+
+## Production
+
+Production-контур включает PostgreSQL, Redis, backend и Nginx/TLS. Секреты БД, JWT, Redis, интеграции 1С и TLS-ключ не хранятся в Git и подключаются через Docker secrets.
+
+Инструкция: `docs/production.md`.
+
+GitHub Actions отдельно проверяет production Compose и реально собирает backend/web Docker-образы.
+
+## Резервные копии
+
+Создать проверенную custom-format копию PostgreSQL:
+
+```bash
+ops/backup-postgres.sh
 ```
 
-и передает `Authorization: Bearer <access-token>`.
+Восстановление требует явного подтверждения:
 
-Браузер сначала получает короткоживущий одноразовый ticket:
-
-```text
-POST /api/v1/auth/ws-ticket
+```bash
+CEH_CONFIRM_RESTORE=YES ops/restore-postgres.sh ./backups/<файл>.dump
 ```
 
-а затем подключается к:
+Копия проверяется через `pg_restore --list` и сопровождается SHA-256. При неудачном restore backend/web остаются остановленными.
 
-```text
-/api/v1/ws/browser-updates?ticket=<ticket>
-```
-
-Основной JWT не попадает в URL WebSocket. Панель использует один канал для обзора, документов, денег и отчетов; редкий REST polling остается резервным механизмом.
+Подробная процедура: `docs/backups.md`.
 
 ## Учет и сторнирование
 
@@ -229,7 +244,7 @@ npm run dev
 
 ## Следующий этап
 
-- production-конфигурация backend и веб-панели с TLS/reverse proxy и безопасной передачей секретов;
-- масштабирование WebSocket через Redis для нескольких экземпляров backend;
 - подготовка подписанной Android release-сборки без хранения ключей подписи в репозитории;
-- эксплуатационные резервные копии PostgreSQL и процедура восстановления.
+- эксплуатационный мониторинг/метрики и централизованные логи;
+- автоматизированная проверка восстановления production-бэкапа на изолированной БД;
+- нагрузочные тесты конкурентных складских операций и WebSocket fan-out.

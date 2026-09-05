@@ -16,6 +16,7 @@ on:
       - "admin-web/.dockerignore"
       - "admin-web/src/**"
       - "admin-web/package.json"
+      - "ops/**"
       - ".github/workflows/production-ci.yml"
   pull_request:
     paths:
@@ -23,6 +24,7 @@ on:
       - ".env.production.example"
       - "backend/**"
       - "admin-web/**"
+      - "ops/**"
       - ".github/workflows/production-ci.yml"
 
 jobs:
@@ -31,6 +33,9 @@ jobs:
     steps:
       - name: Получить код
         uses: actions/checkout@v4
+
+      - name: Проверить эксплуатационные скрипты
+        run: bash -n ops/backup-postgres.sh ops/restore-postgres.sh
 
       - name: Подготовить тестовые секреты
         run: |

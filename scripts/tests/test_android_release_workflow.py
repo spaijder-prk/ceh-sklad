@@ -27,6 +27,8 @@ class AndroidReleaseContractTests(unittest.TestCase):
             "--print-certs",
             "jarsigner -verify",
             "android_release_manifest.py",
+            "verify_android_release.py",
+            "Перепроверить подготовленные файлы релиза",
             "sha256sum",
             "gh release view",
             "gh release create",

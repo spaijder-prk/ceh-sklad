@@ -4,7 +4,9 @@ on:
   push:
     branches: [main]
     paths:
+      - "scripts/android_release_manifest.py"
       - "scripts/prepare_production_env.py"
+      - "scripts/verify_android_release.py"
       - "scripts/tests/**"
       - "docker-compose.production.yml"
       - ".github/workflows/android-release.yml"
@@ -12,7 +14,9 @@ on:
       - "android/app/build.gradle.kts"
   pull_request:
     paths:
+      - "scripts/android_release_manifest.py"
       - "scripts/prepare_production_env.py"
+      - "scripts/verify_android_release.py"
       - "scripts/tests/**"
       - "docker-compose.production.yml"
       - ".github/workflows/android-release.yml"
@@ -40,7 +44,12 @@ jobs:
           python-version: "3.12"
 
       - name: Проверить синтаксис
-        run: python -m compileall scripts/prepare_production_env.py scripts/tests
+        run: >-
+          python -m compileall
+          scripts/android_release_manifest.py
+          scripts/prepare_production_env.py
+          scripts/verify_android_release.py
+          scripts/tests
 
       - name: Выполнить release-контракт тесты
         run: python -m unittest discover -s scripts/tests -p "test_*.py" -v

@@ -165,6 +165,23 @@ jobs:
           echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "release_dir=$RELEASE_DIR" >> "$GITHUB_OUTPUT"
 
+      - name: Перепроверить подготовленные файлы релиза
+        env:
+          API_BASE_URL: ${{ inputs.api_base_url }}
+          VERSION_NAME: ${{ steps.release_meta.outputs.version_name }}
+          RELEASE_DIR: ${{ steps.release_meta.outputs.release_dir }}
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          test -n "$APKSIGNER"
+          python scripts/verify_android_release.py \
+            --apk "$RELEASE_DIR/ceh-sklad-${VERSION_NAME}.apk" \
+            --aab "$RELEASE_DIR/ceh-sklad-${VERSION_NAME}.aab" \
+            --manifest "$RELEASE_DIR/android-release-manifest.json" \
+            --checksums "$RELEASE_DIR/SHA256SUMS.txt" \
+            --apksigner "$APKSIGNER" \
+            --expected-api-base-url "$API_BASE_URL" \
+            --expected-source-commit "$GITHUB_SHA"
+
       - name: Проверить уникальность версии
         env:
           GH_TOKEN: ${{ github.token }}

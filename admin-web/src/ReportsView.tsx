@@ -1,4 +1,5 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { REALTIME_CHANGE_EVENT } from "./realtime";
 import "./reports.css";
 
 type DecimalValue = string | number;
@@ -75,6 +76,13 @@ export function ReportsView() {
 
   useEffect(() => {
     void load(appliedFrom, appliedTo);
+    const onRealtimeChange = () => void load(appliedFrom, appliedTo);
+    window.addEventListener(REALTIME_CHANGE_EVENT, onRealtimeChange);
+    const timer = window.setInterval(() => void load(appliedFrom, appliedTo), 60_000);
+    return () => {
+      window.removeEventListener(REALTIME_CHANGE_EVENT, onRealtimeChange);
+      window.clearInterval(timer);
+    };
   }, [appliedFrom, appliedTo, load]);
 
   const applyPeriod = (event: FormEvent<HTMLFormElement>) => {

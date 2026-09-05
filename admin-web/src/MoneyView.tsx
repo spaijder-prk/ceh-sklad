@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { REALTIME_CHANGE_EVENT } from "./realtime";
 import "./money.css";
 
 type MoneyOperation = "sale" | "payment" | "adjustment";
@@ -64,8 +65,13 @@ export function MoneyView({
 
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(), 15_000);
-    return () => window.clearInterval(timer);
+    const onRealtimeChange = () => void load();
+    window.addEventListener(REALTIME_CHANGE_EVENT, onRealtimeChange);
+    const timer = window.setInterval(() => void load(), 60_000);
+    return () => {
+      window.removeEventListener(REALTIME_CHANGE_EVENT, onRealtimeChange);
+      window.clearInterval(timer);
+    };
   }, [load]);
 
   const representatives = useMemo(() => {

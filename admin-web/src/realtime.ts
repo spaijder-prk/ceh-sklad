@@ -4,6 +4,7 @@ const TOKEN_KEY = "ceh-admin-access-token";
 const RECONNECT_DELAY_MS = 5_000;
 const PING_INTERVAL_MS = 25_000;
 
+export const REALTIME_CHANGE_EVENT = "ceh-realtime-change";
 export type RealtimeStatus = "offline" | "connecting" | "online";
 
 interface TicketResponse {
@@ -79,6 +80,9 @@ export function useRealtimeUpdates(
           try {
             const payload = JSON.parse(String(event.data)) as { type?: string };
             if (payload.type === "state_changed" || payload.type === "catalog_changed") {
+              window.dispatchEvent(
+                new CustomEvent(REALTIME_CHANGE_EVENT, { detail: payload }),
+              );
               void onChanged(true);
             }
           } catch {

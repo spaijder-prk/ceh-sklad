@@ -7,7 +7,16 @@ from sqlalchemy import func, select
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import DocumentStatus, DocumentType, Product, Representative, StockDocument, Warehouse
+from app.models import (
+    DocumentStatus,
+    DocumentType,
+    Product,
+    Representative,
+    RepresentativeStockBalance,
+    StockDocument,
+    Warehouse,
+    WarehouseStockBalance,
+)
 from app.schemas import IssueRequest, QuantityLine, ReceiptRequest, SaleLine, SaleRequest
 from app.services import (
     ConflictError,
@@ -16,7 +25,6 @@ from app.services import (
     register_sale,
     representative_balances,
     representative_debt,
-    warehouse_balances,
 )
 
 
@@ -91,9 +99,14 @@ def test_concurrent_issue_cannot_overdraw_warehouse_balance():
     assert results.count("conflict") == 3
 
     with SessionLocal() as session:
-        balances = warehouse_balances(session, warehouse_id)
-        assert len(balances) == 1
-        assert balances[0].quantity == Decimal("0.000")
+        warehouse_balance = session.scalar(
+            select(WarehouseStockBalance).where(
+                WarehouseStockBalance.warehouse_id == warehouse_id,
+                WarehouseStockBalance.product_id == product_id,
+            )
+        )
+        assert warehouse_balance is not None
+        assert Decimal(warehouse_balance.quantity) == Decimal("0.000")
 
         representative_total = sum(
             (
@@ -182,6 +195,14 @@ def test_concurrent_sales_cannot_overdraw_representative_balance_or_debt():
     assert results.count("conflict") == 3
 
     with SessionLocal() as session:
+        representative_balance = session.scalar(
+            select(RepresentativeStockBalance).where(
+                RepresentativeStockBalance.representative_id == representative_id,
+                RepresentativeStockBalance.product_id == product_id,
+            )
+        )
+        assert representative_balance is not None
+        assert Decimal(representative_balance.quantity) == Decimal("0.000")
         assert representative_balances(session, representative_id) == []
         assert representative_debt(session, representative_id).debt == Decimal("1000.00")
 

@@ -1,17 +1,28 @@
 package ru.ceh.sklad.data
 
 import android.content.Context
+import com.google.gson.Gson
+import java.io.IOException
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import retrofit2.HttpException
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import ru.ceh.sklad.BuildConfig
+import ru.ceh.sklad.data.offline.FlushResult
+import ru.ceh.sklad.data.offline.OfflineDatabase
+import ru.ceh.sklad.data.offline.PendingOperationEntity
+import ru.ceh.sklad.data.offline.PendingOperationWorker
+import ru.ceh.sklad.data.offline.QueueStats
 
 class CehRepository(context: Context) {
-    private val tokenStore = TokenStore(context.applicationContext)
+    private val appContext = context.applicationContext
+    private val tokenStore = TokenStore(appContext)
+    private val gson = Gson()
+    private val pendingDao = OfflineDatabase.get(appContext).pendingOperationDao()
 
     private val httpClient = OkHttpClient.Builder()
         .addInterceptor { chain ->
@@ -30,7 +41,7 @@ class CehRepository(context: Context) {
     private val api: CehApi = Retrofit.Builder()
         .baseUrl(BuildConfig.API_BASE_URL)
         .client(httpClient)
-        .addConverterFactory(GsonConverterFactory.create())
+        .addConverterFactory(GsonConverterFactory.create(gson))
         .build()
         .create(CehApi::class.java)
 
@@ -39,6 +50,7 @@ class CehRepository(context: Context) {
     suspend fun login(email: String, password: String) {
         val token = api.login(email.trim(), password).accessToken
         tokenStore.saveToken(token)
+        schedulePendingSync()
     }
 
     fun logout() {
@@ -82,6 +94,94 @@ class CehRepository(context: Context) {
     suspend fun registerSale(request: SaleRequestDto): OperationResultDto = api.registerSale(request)
 
     suspend fun registerReturn(request: ReturnRequestDto): OperationResultDto = api.registerReturn(request)
+
+    suspend fun enqueueSale(request: SaleRequestDto) {
+        val externalId = requireNotNull(request.externalId) {
+            "Для офлайн-продажи обязателен external_id"
+        }
+        pendingDao.upsert(
+            PendingOperationEntity(
+                externalId = externalId,
+                operationType = PendingOperationEntity.TYPE_SALE,
+                payloadJson = gson.toJson(request),
+                createdAt = System.currentTimeMillis(),
+            ),
+        )
+        schedulePendingSync()
+    }
+
+    suspend fun enqueueReturn(request: ReturnRequestDto) {
+        val externalId = requireNotNull(request.externalId) {
+            "Для офлайн-возврата обязателен external_id"
+        }
+        pendingDao.upsert(
+            PendingOperationEntity(
+                externalId = externalId,
+                operationType = PendingOperationEntity.TYPE_RETURN,
+                payloadJson = gson.toJson(request),
+                createdAt = System.currentTimeMillis(),
+            ),
+        )
+        schedulePendingSync()
+    }
+
+    suspend fun queueStats(): QueueStats = QueueStats(
+        pending = pendingDao.pendingCount(),
+        failed = pendingDao.failedCount(),
+    )
+
+    suspend fun retryFailedOperations() {
+        pendingDao.retryFailed()
+        schedulePendingSync()
+    }
+
+    fun schedulePendingSync() {
+        PendingOperationWorker.schedule(appContext)
+    }
+
+    suspend fun flushPendingOperations(): FlushResult {
+        for (operation in pendingDao.pending()) {
+            try {
+                when (operation.operationType) {
+                    PendingOperationEntity.TYPE_SALE -> api.registerSale(
+                        gson.fromJson(operation.payloadJson, SaleRequestDto::class.java),
+                    )
+                    PendingOperationEntity.TYPE_RETURN -> api.registerReturn(
+                        gson.fromJson(operation.payloadJson, ReturnRequestDto::class.java),
+                    )
+                    else -> {
+                        pendingDao.markFailed(operation.externalId, "Неизвестный тип операции")
+                        continue
+                    }
+                }
+                pendingDao.delete(operation.externalId)
+            } catch (error: HttpException) {
+                when {
+                    error.code() == 401 -> return FlushResult.AUTH_REQUIRED
+                    error.code() == 408 || error.code() == 429 || error.code() >= 500 -> {
+                        pendingDao.recordTemporaryFailure(
+                            operation.externalId,
+                            "HTTP ${error.code()}",
+                        )
+                        return FlushResult.RETRY_LATER
+                    }
+                    else -> pendingDao.markFailed(
+                        operation.externalId,
+                        "Сервер отклонил операцию: HTTP ${error.code()}",
+                    )
+                }
+            } catch (error: IOException) {
+                pendingDao.recordTemporaryFailure(operation.externalId, error.message)
+                return FlushResult.RETRY_LATER
+            } catch (error: Exception) {
+                pendingDao.markFailed(
+                    operation.externalId,
+                    error.message ?: "Не удалось разобрать сохраненную операцию",
+                )
+            }
+        }
+        return FlushResult.COMPLETED
+    }
 
     fun openUpdates(
         onChanged: () -> Unit,

@@ -3,6 +3,7 @@ package ru.ceh.sklad.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import java.io.IOException
 import java.math.BigDecimal
 import java.math.RoundingMode
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,6 +36,8 @@ data class AppUiState(
     val representativeBalances: List<RepresentativeBalanceDto> = emptyList(),
     val debt: BigDecimal? = null,
     val documents: List<DocumentDto> = emptyList(),
+    val pendingOperations: Int = 0,
+    val failedOperations: Int = 0,
     val realtimeActive: Boolean = false,
     val operationLoading: Boolean = false,
     val operationMessage: String? = null,
@@ -120,6 +123,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (state.value.operationLoading) return
 
+        val request = SaleRequestDto(
+            representativeId = representative.id,
+            lines = listOf(
+                SaleLineDto(
+                    productId = productId,
+                    quantity = quantity,
+                    priceType = priceType,
+                ),
+            ),
+            comment = "Продажа из Android-приложения",
+            externalId = externalId,
+        )
+
         viewModelScope.launch {
             _state.update {
                 it.copy(
@@ -129,20 +145,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             try {
-                val result = repository.registerSale(
-                    SaleRequestDto(
-                        representativeId = representative.id,
-                        lines = listOf(
-                            SaleLineDto(
-                                productId = productId,
-                                quantity = quantity,
-                                priceType = priceType,
-                            ),
-                        ),
-                        comment = "Продажа из Android-приложения",
-                        externalId = externalId,
-                    ),
-                )
+                val result = repository.registerSale(request)
                 loadDashboard()
                 _state.update {
                     it.copy(
@@ -152,7 +155,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             } catch (error: Throwable) {
-                handleOperationError(error)
+                if (error.canQueueForLater()) {
+                    queueSale(request)
+                } else {
+                    handleOperationError(error)
+                }
             }
         }
     }
@@ -169,6 +176,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (state.value.operationLoading) return
 
+        val request = ReturnRequestDto(
+            representativeId = representative.id,
+            warehouseId = warehouseId,
+            lines = listOf(QuantityLineDto(productId = productId, quantity = quantity)),
+            comment = "Возврат из Android-приложения",
+            externalId = externalId,
+        )
+
         viewModelScope.launch {
             _state.update {
                 it.copy(
@@ -178,15 +193,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             try {
-                repository.registerReturn(
-                    ReturnRequestDto(
-                        representativeId = representative.id,
-                        warehouseId = warehouseId,
-                        lines = listOf(QuantityLineDto(productId = productId, quantity = quantity)),
-                        comment = "Возврат из Android-приложения",
-                        externalId = externalId,
-                    ),
-                )
+                repository.registerReturn(request)
                 loadDashboard()
                 _state.update {
                     it.copy(
@@ -196,7 +203,27 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             } catch (error: Throwable) {
-                handleOperationError(error)
+                if (error.canQueueForLater()) {
+                    queueReturn(request)
+                } else {
+                    handleOperationError(error)
+                }
+            }
+        }
+    }
+
+    fun retryFailedOperations() {
+        viewModelScope.launch {
+            try {
+                repository.retryFailedOperations()
+                updateQueueStats()
+                _state.update {
+                    it.copy(operationMessage = "Ошибочные операции снова поставлены в очередь")
+                }
+            } catch (error: Throwable) {
+                _state.update {
+                    it.copy(operationError = error.message ?: "Не удалось повторить очередь")
+                }
             }
         }
     }
@@ -222,8 +249,54 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         super.onCleared()
     }
 
+    private suspend fun queueSale(request: SaleRequestDto) {
+        try {
+            repository.enqueueSale(request)
+            updateQueueStats()
+            _state.update {
+                it.copy(
+                    operationLoading = false,
+                    operationMessage = "Нет связи с сервером. Продажа сохранена в очередь и будет проведена после восстановления сети.",
+                    operationError = null,
+                )
+            }
+        } catch (queueError: Throwable) {
+            _state.update {
+                it.copy(
+                    operationLoading = false,
+                    operationError = "Не удалось сохранить продажу в локальную очередь: ${queueError.message ?: "неизвестная ошибка"}",
+                )
+            }
+        }
+    }
+
+    private suspend fun queueReturn(request: ReturnRequestDto) {
+        try {
+            repository.enqueueReturn(request)
+            updateQueueStats()
+            _state.update {
+                it.copy(
+                    operationLoading = false,
+                    operationMessage = "Нет связи с сервером. Возврат сохранен в очередь и будет проведен после восстановления сети.",
+                    operationError = null,
+                )
+            }
+        } catch (queueError: Throwable) {
+            _state.update {
+                it.copy(
+                    operationLoading = false,
+                    operationError = "Не удалось сохранить возврат в локальную очередь: ${queueError.message ?: "неизвестная ошибка"}",
+                )
+            }
+        }
+    }
+
     private suspend fun loadDashboard() {
         val dashboard = repository.loadDashboard()
+        val queue = repository.queueStats()
+        if (queue.pending > 0) {
+            repository.schedulePendingSync()
+        }
         _state.update {
             it.copy(
                 user = dashboard.user,
@@ -233,7 +306,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 representativeBalances = dashboard.representativeBalances,
                 debt = dashboard.debt,
                 documents = dashboard.documents,
+                pendingOperations = queue.pending,
+                failedOperations = queue.failed,
                 error = null,
+            )
+        }
+    }
+
+    private suspend fun updateQueueStats() {
+        val queue = repository.queueStats()
+        _state.update {
+            it.copy(
+                pendingOperations = queue.pending,
+                failedOperations = queue.failed,
             )
         }
     }
@@ -299,7 +384,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             422 -> "Сервер не принял данные операции. Проверьте количество и выбранные значения."
             else -> "Не удалось провести операцию: ошибка сервера ${error.code()}"
         }
-        else -> "Нет ответа от сервера. Повторная отправка этой же операции безопасна."
+        else -> "Не удалось провести операцию: ${error.message ?: "нет ответа от сервера"}"
     }
 
     private fun userMessage(error: Throwable): String = when (error) {
@@ -311,5 +396,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         else -> error.message ?: "Не удалось связаться с сервером"
     }
 }
+
+private fun Throwable.canQueueForLater(): Boolean =
+    this is IOException ||
+        (this is HttpException && (code() == 408 || code() == 429 || code() >= 500))
 
 private fun BigDecimal.money(): String = setScale(2, RoundingMode.HALF_UP).toPlainString()

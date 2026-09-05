@@ -51,6 +51,7 @@ fun CehApp(viewModel: AppViewModel = viewModel()) {
             DashboardScreen(
                 state = state,
                 onRefresh = { viewModel.refresh() },
+                onRetryFailed = viewModel::retryFailedOperations,
                 onLogout = viewModel::logout,
             )
         }
@@ -133,6 +134,7 @@ private fun LoginScreen(
 private fun DashboardScreen(
     state: AppUiState,
     onRefresh: () -> Unit,
+    onRetryFailed: () -> Unit,
     onLogout: () -> Unit,
 ) {
     Scaffold(
@@ -226,6 +228,15 @@ private fun DashboardScreen(
                 item {
                     RepresentativeOperationsPanel(state = state)
                 }
+                if (state.pendingOperations > 0 || state.failedOperations > 0) {
+                    item {
+                        OfflineQueueCard(
+                            pending = state.pendingOperations,
+                            failed = state.failedOperations,
+                            onRetryFailed = onRetryFailed,
+                        )
+                    }
+                }
                 item {
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp)) {
@@ -255,6 +266,42 @@ private fun DashboardScreen(
                     ) { document ->
                         RepresentativeHistoryCard(document)
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OfflineQueueCard(
+    pending: Int,
+    failed: Int,
+    onRetryFailed: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text("Офлайн-очередь", style = MaterialTheme.typography.titleMedium)
+            if (pending > 0) {
+                Text("Ожидают отправки: $pending")
+                Text(
+                    "Операции будут отправлены автоматически при появлении сети. Остатки изменятся только после подтверждения сервера.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (failed > 0) {
+                Text(
+                    "Требуют проверки: $failed",
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Text(
+                    "Сервер отклонил эти операции. Обновите остатки и повторите попытку.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                OutlinedButton(onClick = onRetryFailed) {
+                    Text("Повторить ошибки")
                 }
             }
         }

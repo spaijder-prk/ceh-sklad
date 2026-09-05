@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from .db import get_session
 from .document_schemas import DocumentCancelResult, DocumentRead
 from .document_service import cancel_document, document_journal
+from .integration_api import router as integration_router
 from .models import Representative, User, UserRole
 from .money_api import router as money_router
 from .realtime import stock_updates
@@ -78,6 +79,7 @@ def cancel_document_route(
 
 
 # Main подключает этот подмаршрутизатор под общим /api/v1, поэтому здесь
-# собираем рядом управленческие маршруты, не раздувая основной модуль приложения.
+# собираем дополнительные контуры API, не раздувая основной модуль приложения.
 router.include_router(reports_router)
 router.include_router(money_router)
+router.include_router(integration_router)

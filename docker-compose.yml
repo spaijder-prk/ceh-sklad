@@ -24,6 +24,7 @@ services:
       CEH_DATABASE_URL: postgresql+psycopg://ceh:ceh@db:5432/ceh_sklad
       CEH_AUTO_CREATE_SCHEMA: "false"
       CEH_JWT_SECRET: "local-development-secret-change-me"
+      CEH_INTEGRATION_API_KEY: "${CEH_INTEGRATION_API_KEY:-}"
     command: >
       sh -c "pip install -e . && alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     ports:

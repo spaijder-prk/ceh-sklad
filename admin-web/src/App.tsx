@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { AdminTools } from "./AdminTools";
 import { DocumentsView } from "./DocumentsView";
+import { ReportsView } from "./ReportsView";
 import {
   ApiError,
   DashboardData,
@@ -10,7 +11,7 @@ import {
   login,
 } from "./api";
 
-type View = "overview" | "warehouses" | "catalog" | "representatives" | "documents" | "admin";
+type View = "overview" | "warehouses" | "catalog" | "representatives" | "documents" | "reports" | "admin";
 
 const money = new Intl.NumberFormat("ru-RU", {
   style: "currency",
@@ -95,6 +96,7 @@ export default function App() {
           <NavButton active={effectiveView === "catalog"} onClick={() => setView("catalog")}>Товары</NavButton>
           <NavButton active={effectiveView === "representatives"} onClick={() => setView("representatives")}>Представители</NavButton>
           <NavButton active={effectiveView === "documents"} onClick={() => setView("documents")}>Документы</NavButton>
+          <NavButton active={effectiveView === "reports"} onClick={() => setView("reports")}>Отчёты</NavButton>
           {isAdmin && (
             <NavButton active={effectiveView === "admin"} onClick={() => setView("admin")}>Администрирование</NavButton>
           )}
@@ -128,6 +130,7 @@ export default function App() {
         {effectiveView === "catalog" && <Catalog data={data} />}
         {effectiveView === "representatives" && <Representatives data={data} />}
         {effectiveView === "documents" && <DocumentsView isAdmin={isAdmin} onChanged={() => refresh()} />}
+        {effectiveView === "reports" && <ReportsView />}
         {effectiveView === "admin" && isAdmin && <AdminTools data={data} onChanged={() => refresh()} />}
       </main>
     </div>
@@ -337,6 +340,7 @@ function viewTitle(view: View): string {
     catalog: "Каталог товаров",
     representatives: "Торговые представители",
     documents: "Журнал документов",
+    reports: "Отчёты руководителя",
     admin: "Администрирование",
   }[view];
 }

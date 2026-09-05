@@ -169,4 +169,4 @@ Android поддерживает:
 - `docs/INTEGRATION_UNF_CLOUD.md`;
 - `docs/UNF_BRIDGE_RUNBOOK.md`.
 
-PR #1 намеренно остается draft до фактического production/staging UAT, подписанного Android artifact и проверки реальной тестовой облачной УНФ.
+Основная разработка теперь ведётся из `main`; ранее разошедшиеся истории `main` и `feature/bazovoe-yadro` консолидированы merge-коммитом `57826395b27e29928ebcd8aeccdf9a1c5afb5fd5` без потери истории. До фактического production-релиза остаются внешние шаги из issues #7 и #8: реальный HTTPS deployment, подписанный Android release/проверка на физическом устройстве и UAT с настоящим tenant УНФ.

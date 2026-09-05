@@ -1,0 +1,77 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:-ceh_sklad}"
+      POSTGRES_USER: "${POSTGRES_USER:-ceh}"
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - db_password
+    volumes:
+      - ceh_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: "${POSTGRES_DB:-ceh_sklad}"
+      POSTGRES_USER: "${POSTGRES_USER:-ceh}"
+      CEH_ACCESS_TOKEN_MINUTES: "${CEH_ACCESS_TOKEN_MINUTES:-720}"
+    secrets:
+      - db_password
+      - jwt_secret
+      - integration_api_key
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  web:
+    build:
+      context: ./admin-web
+    restart: unless-stopped
+    ports:
+      - "${CEH_HTTP_PORT:-80}:80"
+      - "${CEH_HTTPS_PORT:-443}:443"
+    secrets:
+      - tls_fullchain
+      - tls_privkey
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  ceh_postgres_data:
+
+secrets:
+  db_password:
+    file: "${CEH_DB_PASSWORD_FILE:?Укажите CEH_DB_PASSWORD_FILE}"
+  jwt_secret:
+    file: "${CEH_JWT_SECRET_FILE:?Укажите CEH_JWT_SECRET_FILE}"
+  integration_api_key:
+    file: "${CEH_INTEGRATION_API_KEY_FILE:?Укажите CEH_INTEGRATION_API_KEY_FILE}"
+  tls_fullchain:
+    file: "${CEH_TLS_FULLCHAIN_FILE:?Укажите CEH_TLS_FULLCHAIN_FILE}"
+  tls_privkey:
+    file: "${CEH_TLS_PRIVKEY_FILE:?Укажите CEH_TLS_PRIVKEY_FILE}"

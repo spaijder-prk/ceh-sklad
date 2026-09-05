@@ -1,0 +1,59 @@
+name: Проверка production-контейнеров
+
+on:
+  push:
+    paths:
+      - "compose.production.yml"
+      - ".env.production.example"
+      - "backend/Dockerfile"
+      - "backend/entrypoint-production.sh"
+      - "backend/.dockerignore"
+      - "backend/app/**"
+      - "backend/alembic/**"
+      - "backend/pyproject.toml"
+      - "admin-web/Dockerfile"
+      - "admin-web/nginx.production.conf"
+      - "admin-web/.dockerignore"
+      - "admin-web/src/**"
+      - "admin-web/package.json"
+      - ".github/workflows/production-ci.yml"
+  pull_request:
+    paths:
+      - "compose.production.yml"
+      - ".env.production.example"
+      - "backend/**"
+      - "admin-web/**"
+      - ".github/workflows/production-ci.yml"
+
+jobs:
+  production:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+
+      - name: Подготовить тестовые секреты
+        run: |
+          mkdir -p /tmp/ceh-secrets
+          printf '%s\n' 'ci-db-password-with-special-@-chars' > /tmp/ceh-secrets/db_password
+          printf '%s\n' 'ci-jwt-secret-0123456789-abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJKLMNOPQRSTUVWXYZ' > /tmp/ceh-secrets/jwt_secret
+          printf '%s\n' 'ci-integration-secret' > /tmp/ceh-secrets/integration_api_key
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -keyout /tmp/ceh-secrets/privkey.pem \
+            -out /tmp/ceh-secrets/fullchain.pem \
+            -subj '/CN=localhost'
+
+      - name: Проверить production Compose
+        env:
+          CEH_DB_PASSWORD_FILE: /tmp/ceh-secrets/db_password
+          CEH_JWT_SECRET_FILE: /tmp/ceh-secrets/jwt_secret
+          CEH_INTEGRATION_API_KEY_FILE: /tmp/ceh-secrets/integration_api_key
+          CEH_TLS_FULLCHAIN_FILE: /tmp/ceh-secrets/fullchain.pem
+          CEH_TLS_PRIVKEY_FILE: /tmp/ceh-secrets/privkey.pem
+        run: docker compose -f compose.production.yml config >/dev/null
+
+      - name: Собрать production backend
+        run: docker build -t ceh-sklad-backend:ci ./backend
+
+      - name: Собрать production веб-панель
+        run: docker build -t ceh-sklad-web:ci ./admin-web

@@ -1,0 +1,186 @@
+name: Проверка проекта
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  android-changes:
+    name: Определить необходимость Android build
+    runs-on: ubuntu-latest
+    outputs:
+      run_android: ${{ steps.diff.outputs.run_android }}
+    steps:
+      - name: Получить head commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 2
+      - name: Проверить Android-изменения
+        id: diff
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "run_android=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --quiet HEAD^ HEAD -- android .github/workflows/ci.yml; then
+            echo "run_android=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_android=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  backend:
+    name: Проверка backend и интеграционные тесты
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: ceh_sklad_test
+          POSTGRES_USER: ceh
+          POSTGRES_PASSWORD: ceh_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ceh -d ceh_sklad_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://ceh:ceh_test@localhost:5432/ceh_sklad_test
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+      - name: Установить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Установить зависимости
+        run: pip install -e '.[dev]'
+      - name: Проверить синтаксис
+        run: python -m compileall app tests alembic ../scripts/load_test.py ../scripts/staging_smoke.py
+      - name: Применить миграции
+        run: alembic upgrade head
+      - name: Выполнить интеграционные тесты
+        run: pytest -q
+      - name: Проверить восстановление дампа в отдельную БД
+        env:
+          PG_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          DUMP=/tmp/ceh_sklad_restore_check.dump
+          docker exec "$PG_CONTAINER" pg_dump -U ceh -d ceh_sklad_test -Fc > "$DUMP"
+          docker exec "$PG_CONTAINER" dropdb -U ceh --if-exists ceh_sklad_restore_check
+          docker exec "$PG_CONTAINER" createdb -U ceh ceh_sklad_restore_check
+          cat "$DUMP" | docker exec -i "$PG_CONTAINER" pg_restore -U ceh -d ceh_sklad_restore_check --no-owner
+          RESTORED_VERSION=$(docker exec "$PG_CONTAINER" psql -U ceh -d ceh_sklad_restore_check -Atc 'SELECT version_num FROM alembic_version')
+          ACTIVE_COLUMN_COUNT=$(docker exec "$PG_CONTAINER" psql -U ceh -d ceh_sklad_restore_check -Atc "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='locations' AND column_name='is_active'")
+          EXPORT_LINK_TABLE_COUNT=$(docker exec "$PG_CONTAINER" psql -U ceh -d ceh_sklad_restore_check -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='integration_export_links'")
+          SALE_PRICE_TYPE_COLUMN_COUNT=$(docker exec "$PG_CONTAINER" psql -U ceh -d ceh_sklad_restore_check -Atc "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='stock_documents' AND column_name='sale_price_type'")
+          test "$RESTORED_VERSION" = "20260904_09"
+          test "$ACTIVE_COLUMN_COUNT" = "1"
+          test "$EXPORT_LINK_TABLE_COUNT" = "1"
+          test "$SALE_PRICE_TYPE_COLUMN_COUNT" = "1"
+          docker exec "$PG_CONTAINER" dropdb -U ceh ceh_sklad_restore_check
+
+  unf-bridge:
+    name: Тесты bridge облачной УНФ
+    runs-on: ubuntu-latest
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+      - name: Установить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Установить bridge и тестовые зависимости
+        run: pip install -e './unf-bridge[dev]'
+      - name: Проверить синтаксис bridge
+        run: python -m compileall unf-bridge/unf_bridge unf-bridge/tests
+      - name: Выполнить unit-тесты bridge
+        run: pytest -q unf-bridge/tests
+
+  admin-web:
+    name: Сборка панели управления
+    runs-on: ubuntu-latest
+    env:
+      VITE_API_BASE_URL: https://ci.invalid/api/v1
+    defaults:
+      run:
+        working-directory: admin-web
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+      - name: Установить Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Установить зависимости
+        run: npm install
+      - name: Собрать production bundle
+        run: npm run build
+      - name: Проверить отсутствие localhost в production bundle
+        run: |
+          if grep -R "localhost:8000" dist; then
+            echo "В production bundle найден localhost API"
+            exit 1
+          fi
+
+  android:
+    name: Тесты и сборка Android
+    needs: android-changes
+    if: needs.android-changes.outputs.run_android == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+      - name: Установить Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Установить Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+      - name: Выполнить unit-тесты и собрать debug/release/androidTest
+        run: gradle -p android :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease :app:assembleDebugAndroidTest -PCEH_API_BASE_URL=https://ci.invalid/ --stacktrace
+      - name: Сохранить debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ceh-sklad-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+  production-config:
+    name: Проверка production Compose и reverse proxy
+    runs-on: ubuntu-latest
+    env:
+      CEH_DOMAIN: ci.invalid
+      ACME_EMAIL: ci@example.invalid
+      POSTGRES_PASSWORD: ci-postgres-password
+      DATABASE_URL: postgresql+asyncpg://ceh:ci-postgres-password@db:5432/ceh_sklad
+      JWT_SECRET: ci-production-secret-not-for-real-use-1234567890
+      BOOTSTRAP_ADMIN_LOGIN: admin
+      BOOTSTRAP_ADMIN_PASSWORD: ci-admin-password-not-for-real-use
+      INTEGRATION_1C_API_KEY: ci-1c-key-not-for-real-use-1234567890
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+      - name: Проверить итоговую production-конфигурацию
+        run: docker compose -f docker-compose.production.yml config > /tmp/ceh-production-compose.yml
+      - name: Проверить Caddyfile
+        run: docker run --rm -e CEH_DOMAIN=ci.invalid -e ACME_EMAIL=ci@example.invalid -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
+      - name: Собрать production backend-контейнер
+        run: |
+          docker build -t ceh-sklad-backend-ci ./backend
+          test "$(docker inspect -f '{{.Config.User}}' ceh-sklad-backend-ci)" = "ceh"
+      - name: Собрать production web-контейнер
+        run: docker build --build-arg VITE_API_BASE_URL=https://ci.invalid/api/v1 -t ceh-sklad-admin-web-ci ./admin-web

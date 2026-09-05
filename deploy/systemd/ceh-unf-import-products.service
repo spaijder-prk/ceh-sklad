@@ -1,0 +1,24 @@
+[Unit]
+Description=Импорт номенклатуры и двух цен из 1С:УНФ в ceh-sklad
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ceh-unf
+Group=ceh-unf
+EnvironmentFile=/etc/ceh-sklad/unf-bridge.env
+StateDirectory=ceh-unf
+ExecStart=/usr/bin/flock -n -E 0 /var/lib/ceh-unf/bridge.lock /opt/ceh-sklad-unf/bin/ceh-unf-fresh-import-products --mapping /etc/ceh-sklad/unf-tenant.json --limit 100 --execute
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true
+StandardOutput=journal
+StandardError=journal

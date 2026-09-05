@@ -1,561 +1,406 @@
-from collections import defaultdict
+from datetime import UTC, datetime
 from decimal import Decimal
-from hashlib import blake2b
 from uuid import UUID
 
-from sqlalchemy import func, select, text
-from sqlalchemy.orm import Session
+from fastapi import HTTPException, status
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import (
-    DocumentStatus,
-    DocumentType,
-    MoneyOperation,
-    MoneyPosting,
-    PriceType,
+    InventoryBalance,
+    Location,
+    MoneyTransaction,
+    MoneyTransactionKind,
     Product,
-    Representative,
-    RepresentativeStockBalance,
     StockDocument,
-    StockPosting,
-    Warehouse,
-    WarehouseStockBalance,
+    StockDocumentKind,
+    StockDocumentLine,
+    StockMovement,
 )
-from .schemas import (
-    IssueRequest,
-    OperationResult,
-    PaymentRequest,
-    ReceiptRequest,
-    RepresentativeBalanceLine,
-    RepresentativeDebt,
-    ReturnRequest,
-    SaleRequest,
-    TransferRequest,
-    WarehouseBalanceLine,
-)
+from .schemas import AdjustmentItemIn, MovementItemIn, PriceType
 
 
-class DomainError(Exception):
-    pass
-
-
-class NotFoundError(DomainError):
-    pass
-
-
-class ConflictError(DomainError):
-    pass
-
-
-def _must_exist(session: Session, model, object_id: UUID, label: str):
-    obj = session.get(model, object_id)
-    if obj is None:
-        raise NotFoundError(f"{label} не найден")
-    return obj
-
-
-def _group_quantities(lines) -> dict[UUID, Decimal]:
-    grouped: dict[UUID, Decimal] = defaultdict(lambda: Decimal("0"))
-    for line in lines:
-        grouped[line.product_id] += line.quantity
-    return dict(grouped)
-
-
-def _check_products(session: Session, product_ids: set[UUID]) -> dict[UUID, Product]:
-    products = session.scalars(select(Product).where(Product.id.in_(product_ids))).all()
-    result = {product.id: product for product in products}
-    missing = product_ids - set(result)
+async def lock_active_products(
+    session: AsyncSession,
+    product_ids: list[UUID],
+) -> dict[UUID, Product]:
+    """Сериализует движения и архивацию одного товара через Product row lock."""
+    ordered_ids = sorted(set(product_ids), key=str)
+    if not ordered_ids:
+        return {}
+    rows = list(
+        await session.scalars(
+            select(Product)
+            .where(Product.id.in_(ordered_ids))
+            .order_by(Product.id)
+            .with_for_update()
+        )
+    )
+    by_id = {row.id: row for row in rows}
+    missing = [product_id for product_id in ordered_ids if product_id not in by_id]
     if missing:
-        raise NotFoundError(f"Не найдены товары: {', '.join(map(str, missing))}")
-    return result
-
-
-def _warehouse_balance_row(
-    session: Session,
-    warehouse_id: UUID,
-    product_id: UUID,
-    *,
-    lock: bool = False,
-) -> WarehouseStockBalance | None:
-    statement = select(WarehouseStockBalance).where(
-        WarehouseStockBalance.warehouse_id == warehouse_id,
-        WarehouseStockBalance.product_id == product_id,
-    )
-    if lock:
-        statement = statement.with_for_update()
-    return session.scalar(statement)
-
-
-def _representative_balance_row(
-    session: Session,
-    representative_id: UUID,
-    product_id: UUID,
-    *,
-    lock: bool = False,
-) -> RepresentativeStockBalance | None:
-    statement = select(RepresentativeStockBalance).where(
-        RepresentativeStockBalance.representative_id == representative_id,
-        RepresentativeStockBalance.product_id == product_id,
-    )
-    if lock:
-        statement = statement.with_for_update()
-    return session.scalar(statement)
-
-
-def _ensure_warehouse_stock(
-    session: Session, warehouse_id: UUID, required: dict[UUID, Decimal]
-) -> None:
-    for product_id in sorted(required, key=str):
-        quantity = required[product_id]
-        row = _warehouse_balance_row(session, warehouse_id, product_id, lock=True)
-        available = Decimal(row.quantity) if row is not None else Decimal("0")
-        if available < quantity:
-            raise ConflictError(
-                f"Недостаточно товара {product_id} на складе: доступно {available}, требуется {quantity}"
-            )
-
-
-def _ensure_representative_stock(
-    session: Session, representative_id: UUID, required: dict[UUID, Decimal]
-) -> None:
-    for product_id in sorted(required, key=str):
-        quantity = required[product_id]
-        row = _representative_balance_row(session, representative_id, product_id, lock=True)
-        available = Decimal(row.quantity) if row is not None else Decimal("0")
-        if available < quantity:
-            raise ConflictError(
-                f"Недостаточно товара {product_id} у представителя: доступно {available}, требуется {quantity}"
-            )
-
-
-def _change_warehouse_stock(
-    session: Session,
-    warehouse_id: UUID,
-    product_id: UUID,
-    delta: Decimal,
-) -> None:
-    row = _warehouse_balance_row(session, warehouse_id, product_id, lock=True)
-    if row is None:
-        if delta < 0:
-            raise ConflictError(f"Недостаточно товара {product_id} на складе")
-        session.add(
-            WarehouseStockBalance(
-                warehouse_id=warehouse_id,
-                product_id=product_id,
-                quantity=delta,
-            )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Товар не найден: {missing[0]}",
         )
-        return
-
-    new_quantity = Decimal(row.quantity) + delta
-    if new_quantity < 0:
-        raise ConflictError(f"Операция приведет к отрицательному остатку товара {product_id} на складе")
-    row.quantity = new_quantity
-
-
-def _change_representative_stock(
-    session: Session,
-    representative_id: UUID,
-    product_id: UUID,
-    delta: Decimal,
-) -> None:
-    row = _representative_balance_row(session, representative_id, product_id, lock=True)
-    if row is None:
-        if delta < 0:
-            raise ConflictError(f"Недостаточно товара {product_id} у представителя")
-        session.add(
-            RepresentativeStockBalance(
-                representative_id=representative_id,
-                product_id=product_id,
-                quantity=delta,
-            )
+    archived = [row for row in rows if not row.is_active]
+    if archived:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Товар архивирован: {archived[0].sku}",
         )
-        return
-
-    new_quantity = Decimal(row.quantity) + delta
-    if new_quantity < 0:
-        raise ConflictError(
-            f"Операция приведет к отрицательному остатку товара {product_id} у представителя"
-        )
-    row.quantity = new_quantity
+    return by_id
 
 
-def _lock_external_id(session: Session, external_id: str | None) -> None:
-    if not external_id or session.get_bind().dialect.name != "postgresql":
-        return
-
-    # Транзакционная advisory-блокировка сериализует только одинаковые external_id.
-    # Она снимается автоматически при commit/rollback и не требует отдельной таблицы блокировок.
-    digest = blake2b(
-        external_id.encode("utf-8"),
-        digest_size=8,
-        person=b"ceh-idem",
-    ).digest()
-    lock_key = int.from_bytes(digest, byteorder="big", signed=True)
-    session.execute(
-        text("SELECT pg_advisory_xact_lock(:lock_key)"),
-        {"lock_key": lock_key},
+async def _ensure_balance_row(session: AsyncSession, location_id: UUID, product_id: UUID) -> None:
+    """Атомарно создает нулевой остаток, если строки еще нет."""
+    await session.execute(
+        pg_insert(InventoryBalance)
+        .values(location_id=location_id, product_id=product_id, quantity=Decimal("0"))
+        .on_conflict_do_nothing(index_elements=["location_id", "product_id"])
     )
 
 
-def _find_existing_document(session: Session, external_id: str | None) -> StockDocument | None:
-    if not external_id:
+async def _locked_balance(session: AsyncSession, location_id: UUID, product_id: UUID) -> InventoryBalance:
+    await _ensure_balance_row(session, location_id, product_id)
+    balance = await session.scalar(
+        select(InventoryBalance)
+        .where(InventoryBalance.location_id == location_id, InventoryBalance.product_id == product_id)
+        .with_for_update()
+    )
+    if balance is None:
+        raise RuntimeError("Не удалось получить строку остатка после ее создания")
+    return balance
+
+
+async def _locked_transfer_balances(
+    session: AsyncSession,
+    source_location_id: UUID,
+    destination_location_id: UUID,
+    product_id: UUID,
+) -> tuple[InventoryBalance, InventoryBalance]:
+    """Блокирует обе строки в стабильном порядке, уменьшая риск взаимных блокировок."""
+    location_ids = sorted((source_location_id, destination_location_id), key=str)
+    for location_id in location_ids:
+        await _ensure_balance_row(session, location_id, product_id)
+
+    rows = list(
+        await session.scalars(
+            select(InventoryBalance)
+            .where(
+                InventoryBalance.product_id == product_id,
+                InventoryBalance.location_id.in_(location_ids),
+            )
+            .order_by(InventoryBalance.location_id)
+            .with_for_update()
+        )
+    )
+    by_location = {row.location_id: row for row in rows}
+    if source_location_id not in by_location or destination_location_id not in by_location:
+        raise RuntimeError("Не удалось заблокировать строки остатков для перемещения")
+    return by_location[source_location_id], by_location[destination_location_id]
+
+
+def _aggregate_movement_items(items: list[MovementItemIn]) -> list[MovementItemIn]:
+    quantities: dict[UUID, Decimal] = {}
+    for item in items:
+        quantities[item.product_id] = quantities.get(item.product_id, Decimal("0")) + item.quantity
+    return [
+        MovementItemIn(product_id=product_id, quantity=quantity)
+        for product_id, quantity in sorted(quantities.items(), key=lambda pair: str(pair[0]))
+    ]
+
+
+def _aggregate_adjustment_items(items: list[AdjustmentItemIn]) -> list[AdjustmentItemIn]:
+    quantities: dict[UUID, Decimal] = {}
+    for item in items:
+        quantities[item.product_id] = quantities.get(item.product_id, Decimal("0")) + item.quantity_delta
+    return [
+        AdjustmentItemIn(product_id=product_id, quantity_delta=quantity)
+        for product_id, quantity in sorted(quantities.items(), key=lambda pair: str(pair[0]))
+        if quantity != 0
+    ]
+
+
+def _check_document_key(document: StockDocument, kind: StockDocumentKind, payload_hash: str) -> None:
+    if document.kind != kind or document.client_payload_hash != payload_hash:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ключ операции уже использован с другим содержимым",
+        )
+
+
+async def _existing_document(
+    session: AsyncSession,
+    operation_key: str | None,
+    payload_hash: str | None,
+    kind: StockDocumentKind,
+) -> StockDocument | None:
+    if operation_key is None:
         return None
-    return session.scalar(select(StockDocument).where(StockDocument.external_id == external_id))
+    if payload_hash is None:
+        raise RuntimeError("Для идемпотентной операции требуется хэш содержимого")
+    document = await session.scalar(
+        select(StockDocument).where(StockDocument.client_operation_key == operation_key)
+    )
+    if document is not None:
+        _check_document_key(document, kind, payload_hash)
+    return document
 
 
-def _new_document(
-    *, document_type: DocumentType, comment: str | None, external_id: str | None
+async def _flush_new_document(
+    session: AsyncSession,
+    document: StockDocument,
+    kind: StockDocumentKind,
+) -> StockDocument | None:
+    try:
+        await session.flush()
+        return None
+    except IntegrityError as exc:
+        if document.client_operation_key is None or document.client_payload_hash is None:
+            raise
+        operation_key = document.client_operation_key
+        payload_hash = document.client_payload_hash
+        await session.rollback()
+        existing = await session.scalar(
+            select(StockDocument).where(StockDocument.client_operation_key == operation_key)
+        )
+        if existing is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Конфликт при регистрации операции") from exc
+        _check_document_key(existing, kind, payload_hash)
+        return existing
+
+
+def _check_money_key(transaction: MoneyTransaction, payload_hash: str) -> None:
+    if transaction.kind != MoneyTransactionKind.CASH_HANDOVER or transaction.client_payload_hash != payload_hash:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ключ операции уже использован с другим содержимым",
+        )
+
+
+async def create_transfer(
+    session: AsyncSession,
+    *,
+    kind: StockDocumentKind,
+    source_location_id: UUID,
+    destination_location_id: UUID,
+    items: list[MovementItemIn],
+    comment: str | None,
+    created_by_id: UUID | None = None,
+    client_operation_key: str | None = None,
+    client_payload_hash: str | None = None,
 ) -> StockDocument:
-    return StockDocument(
-        document_type=document_type,
-        status=DocumentStatus.POSTED,
+    if source_location_id == destination_location_id:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Источник и получатель совпадают")
+    if not items:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Не указаны товары")
+
+    existing = await _existing_document(session, client_operation_key, client_payload_hash, kind)
+    if existing is not None:
+        return existing
+
+    items = _aggregate_movement_items(items)
+    await lock_active_products(session, [item.product_id for item in items])
+    document = StockDocument(
+        kind=kind,
+        source_location_id=source_location_id,
+        destination_location_id=destination_location_id,
+        created_by_id=created_by_id,
         comment=comment,
-        external_id=external_id,
-    )
-
-
-def receive_goods(session: Session, payload: ReceiptRequest) -> OperationResult:
-    _lock_external_id(session, payload.external_id)
-    existing = _find_existing_document(session, payload.external_id)
-    if existing:
-        return OperationResult(document_id=existing.id)
-
-    _must_exist(session, Warehouse, payload.warehouse_id, "Склад")
-    grouped = _group_quantities(payload.lines)
-    _check_products(session, set(grouped))
-
-    for product_id, quantity in grouped.items():
-        _change_warehouse_stock(session, payload.warehouse_id, product_id, quantity)
-
-    document = _new_document(
-        document_type=DocumentType.RECEIPT,
-        comment=payload.comment,
-        external_id=payload.external_id,
+        client_operation_key=client_operation_key,
+        client_payload_hash=client_payload_hash,
     )
     session.add(document)
-    session.flush()
-    for product_id, quantity in grouped.items():
-        session.add(
-            StockPosting(
-                document_id=document.id,
-                product_id=product_id,
-                warehouse_id=payload.warehouse_id,
-                quantity=quantity,
-            )
+    concurrent_existing = await _flush_new_document(session, document, kind)
+    if concurrent_existing is not None:
+        return concurrent_existing
+
+    for item in items:
+        source, destination = await _locked_transfer_balances(
+            session, source_location_id, destination_location_id, item.product_id
         )
-    session.commit()
-    return OperationResult(document_id=document.id)
+        if source.quantity < item.quantity:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Недостаточный остаток товара {item.product_id}")
+        source.quantity -= item.quantity
+        destination.quantity += item.quantity
+        session.add(StockDocumentLine(document_id=document.id, product_id=item.product_id, quantity=item.quantity))
+        session.add(StockMovement(document_id=document.id, location_id=source_location_id, product_id=item.product_id, quantity_delta=-item.quantity))
+        session.add(StockMovement(document_id=document.id, location_id=destination_location_id, product_id=item.product_id, quantity_delta=item.quantity))
+
+    await session.commit()
+    return document
 
 
-def issue_to_representative(session: Session, payload: IssueRequest) -> OperationResult:
-    _lock_external_id(session, payload.external_id)
-    existing = _find_existing_document(session, payload.external_id)
-    if existing:
-        return OperationResult(document_id=existing.id)
+async def create_adjustment(
+    session: AsyncSession,
+    *,
+    location_id: UUID,
+    items: list[AdjustmentItemIn],
+    comment: str,
+    created_by_id: UUID | None,
+    external_1c_id: str | None = None,
+    mark_synced_1c: bool = False,
+    commit: bool = True,
+) -> StockDocument:
+    if not items:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Не указаны товары")
+    items = _aggregate_adjustment_items(items)
+    if not items:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Корректировка не содержит изменений")
 
-    _must_exist(session, Warehouse, payload.warehouse_id, "Склад")
-    _must_exist(session, Representative, payload.representative_id, "Торговый представитель")
-    grouped = _group_quantities(payload.lines)
-    _check_products(session, set(grouped))
-    _ensure_warehouse_stock(session, payload.warehouse_id, grouped)
-
-    for product_id, quantity in grouped.items():
-        _change_warehouse_stock(session, payload.warehouse_id, product_id, -quantity)
-        _change_representative_stock(session, payload.representative_id, product_id, quantity)
-
-    document = _new_document(
-        document_type=DocumentType.ISSUE_TO_REPRESENTATIVE,
-        comment=payload.comment,
-        external_id=payload.external_id,
+    await lock_active_products(session, [item.product_id for item in items])
+    document = StockDocument(
+        kind=StockDocumentKind.ADJUSTMENT,
+        created_by_id=created_by_id,
+        comment=comment,
+        external_1c_id=external_1c_id,
+        synced_1c_at=datetime.now(UTC) if mark_synced_1c else None,
     )
     session.add(document)
-    session.flush()
-    for product_id, quantity in grouped.items():
-        session.add_all(
-            [
-                StockPosting(
-                    document_id=document.id,
-                    product_id=product_id,
-                    warehouse_id=payload.warehouse_id,
-                    quantity=-quantity,
-                ),
-                StockPosting(
-                    document_id=document.id,
-                    product_id=product_id,
-                    representative_id=payload.representative_id,
-                    quantity=quantity,
-                ),
-            ]
-        )
-    session.commit()
-    return OperationResult(document_id=document.id)
+    await session.flush()
+
+    for item in items:
+        balance = await _locked_balance(session, location_id, item.product_id)
+        new_quantity = balance.quantity + item.quantity_delta
+        if new_quantity < 0:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Корректировка уводит остаток товара {item.product_id} в минус")
+        balance.quantity = new_quantity
+        session.add(StockDocumentLine(document_id=document.id, product_id=item.product_id, quantity=abs(item.quantity_delta)))
+        session.add(StockMovement(document_id=document.id, location_id=location_id, product_id=item.product_id, quantity_delta=item.quantity_delta))
+
+    if commit:
+        await session.commit()
+    else:
+        await session.flush()
+    return document
 
 
-def transfer_between_warehouses(session: Session, payload: TransferRequest) -> OperationResult:
-    _lock_external_id(session, payload.external_id)
-    existing = _find_existing_document(session, payload.external_id)
-    if existing:
-        return OperationResult(document_id=existing.id)
+async def create_sale(
+    session: AsyncSession,
+    *,
+    representative_location_id: UUID,
+    items: list[MovementItemIn],
+    price_type: PriceType,
+    comment: str | None,
+    created_by_id: UUID | None = None,
+    client_operation_key: str | None = None,
+    client_payload_hash: str | None = None,
+) -> StockDocument:
+    if not items:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Не указаны товары")
 
-    _must_exist(session, Warehouse, payload.source_warehouse_id, "Склад-источник")
-    _must_exist(session, Warehouse, payload.target_warehouse_id, "Склад-получатель")
-    grouped = _group_quantities(payload.lines)
-    _check_products(session, set(grouped))
-    _ensure_warehouse_stock(session, payload.source_warehouse_id, grouped)
+    existing = await _existing_document(session, client_operation_key, client_payload_hash, StockDocumentKind.SALE)
+    if existing is not None:
+        return existing
 
-    for product_id, quantity in grouped.items():
-        _change_warehouse_stock(session, payload.source_warehouse_id, product_id, -quantity)
-        _change_warehouse_stock(session, payload.target_warehouse_id, product_id, quantity)
-
-    document = _new_document(
-        document_type=DocumentType.WAREHOUSE_TRANSFER,
-        comment=payload.comment,
-        external_id=payload.external_id,
+    items = _aggregate_movement_items(items)
+    products = await lock_active_products(session, [item.product_id for item in items])
+    document = StockDocument(
+        kind=StockDocumentKind.SALE,
+        source_location_id=representative_location_id,
+        created_by_id=created_by_id,
+        comment=comment,
+        sale_price_type=price_type.value,
+        client_operation_key=client_operation_key,
+        client_payload_hash=client_payload_hash,
     )
     session.add(document)
-    session.flush()
-    for product_id, quantity in grouped.items():
-        session.add_all(
-            [
-                StockPosting(
-                    document_id=document.id,
-                    product_id=product_id,
-                    warehouse_id=payload.source_warehouse_id,
-                    quantity=-quantity,
-                ),
-                StockPosting(
-                    document_id=document.id,
-                    product_id=product_id,
-                    warehouse_id=payload.target_warehouse_id,
-                    quantity=quantity,
-                ),
-            ]
-        )
-    session.commit()
-    return OperationResult(document_id=document.id)
+    concurrent_existing = await _flush_new_document(session, document, StockDocumentKind.SALE)
+    if concurrent_existing is not None:
+        return concurrent_existing
 
-
-def return_from_representative(session: Session, payload: ReturnRequest) -> OperationResult:
-    _lock_external_id(session, payload.external_id)
-    existing = _find_existing_document(session, payload.external_id)
-    if existing:
-        return OperationResult(document_id=existing.id)
-
-    _must_exist(session, Representative, payload.representative_id, "Торговый представитель")
-    _must_exist(session, Warehouse, payload.warehouse_id, "Склад")
-    grouped = _group_quantities(payload.lines)
-    _check_products(session, set(grouped))
-    _ensure_representative_stock(session, payload.representative_id, grouped)
-
-    for product_id, quantity in grouped.items():
-        _change_representative_stock(session, payload.representative_id, product_id, -quantity)
-        _change_warehouse_stock(session, payload.warehouse_id, product_id, quantity)
-
-    document = _new_document(
-        document_type=DocumentType.REPRESENTATIVE_RETURN,
-        comment=payload.comment,
-        external_id=payload.external_id,
-    )
-    session.add(document)
-    session.flush()
-    for product_id, quantity in grouped.items():
-        session.add_all(
-            [
-                StockPosting(
-                    document_id=document.id,
-                    product_id=product_id,
-                    representative_id=payload.representative_id,
-                    quantity=-quantity,
-                ),
-                StockPosting(
-                    document_id=document.id,
-                    product_id=product_id,
-                    warehouse_id=payload.warehouse_id,
-                    quantity=quantity,
-                ),
-            ]
-        )
-    session.commit()
-    return OperationResult(document_id=document.id)
-
-
-def register_sale(session: Session, payload: SaleRequest) -> OperationResult:
-    _lock_external_id(session, payload.external_id)
-    existing = _find_existing_document(session, payload.external_id)
-    if existing:
-        debt_delta = Decimal(
-            session.scalar(
-                select(func.coalesce(func.sum(MoneyPosting.amount), 0)).where(
-                    MoneyPosting.document_id == existing.id,
-                    MoneyPosting.operation == MoneyOperation.SALE,
-                )
-            )
-            or 0
-        )
-        return OperationResult(document_id=existing.id, debt_delta=debt_delta)
-
-    _must_exist(session, Representative, payload.representative_id, "Торговый представитель")
-    required = _group_quantities(payload.lines)
-    products = _check_products(session, set(required))
-    _ensure_representative_stock(session, payload.representative_id, required)
-
-    for product_id, quantity in required.items():
-        _change_representative_stock(session, payload.representative_id, product_id, -quantity)
-
-    document = _new_document(
-        document_type=DocumentType.SALE,
-        comment=payload.comment,
-        external_id=payload.external_id,
-    )
-    session.add(document)
-    session.flush()
-
-    debt_delta = Decimal("0")
-    for line in payload.lines:
-        product = products[line.product_id]
-        unit_price = (
-            product.retail_price if line.price_type == PriceType.RETAIL else product.wholesale_price
-        )
-        debt_delta += line.quantity * unit_price
-        session.add(
-            StockPosting(
-                document_id=document.id,
-                product_id=line.product_id,
-                representative_id=payload.representative_id,
-                quantity=-line.quantity,
-                unit_price=unit_price,
-            )
-        )
+    total = Decimal("0")
+    for item in items:
+        balance = await _locked_balance(session, representative_location_id, item.product_id)
+        if balance.quantity < item.quantity:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Недостаточный остаток товара {item.product_id} у представителя")
+        product = products[item.product_id]
+        unit_price = product.retail_price if price_type == PriceType.RETAIL else product.wholesale_price
+        balance.quantity -= item.quantity
+        total += item.quantity * unit_price
+        session.add(StockDocumentLine(document_id=document.id, product_id=item.product_id, quantity=item.quantity, unit_price=unit_price))
+        session.add(StockMovement(document_id=document.id, location_id=representative_location_id, product_id=item.product_id, quantity_delta=-item.quantity))
 
     session.add(
-        MoneyPosting(
-            representative_id=payload.representative_id,
-            document_id=document.id,
-            operation=MoneyOperation.SALE,
-            amount=debt_delta,
-            comment=payload.comment,
+        MoneyTransaction(
+            representative_location_id=representative_location_id,
+            kind=MoneyTransactionKind.SALE,
+            amount=total,
+            stock_document_id=document.id,
+            created_by_id=created_by_id,
+            comment=comment,
         )
     )
-    session.commit()
-    return OperationResult(document_id=document.id, debt_delta=debt_delta)
+    await session.commit()
+    return document
 
 
-def register_payment(session: Session, payload: PaymentRequest) -> OperationResult:
-    _lock_external_id(session, payload.external_id)
-    if payload.external_id:
-        existing = session.scalar(
-            select(MoneyPosting).where(MoneyPosting.external_id == payload.external_id)
+async def create_cash_handover(
+    session: AsyncSession,
+    *,
+    representative_location_id: UUID,
+    amount: Decimal,
+    comment: str | None,
+    created_by_id: UUID | None = None,
+    client_operation_key: str | None = None,
+    client_payload_hash: str | None = None,
+) -> MoneyTransaction:
+    if client_operation_key is not None:
+        if client_payload_hash is None:
+            raise RuntimeError("Для идемпотентной операции требуется хэш содержимого")
+        existing = await session.scalar(
+            select(MoneyTransaction).where(MoneyTransaction.client_operation_key == client_operation_key)
         )
-        if existing:
-            return OperationResult(
-                money_posting_id=existing.id,
-                debt_delta=existing.amount,
-            )
+        if existing is not None:
+            _check_money_key(existing, client_payload_hash)
+            return existing
 
-    _must_exist(session, Representative, payload.representative_id, "Торговый представитель")
-    posting = MoneyPosting(
-        representative_id=payload.representative_id,
-        operation=MoneyOperation.PAYMENT,
-        amount=-payload.amount,
-        comment=payload.comment,
-        external_id=payload.external_id,
+    representative = await session.scalar(
+        select(Location).where(Location.id == representative_location_id).with_for_update()
     )
-    session.add(posting)
-    session.commit()
-    return OperationResult(money_posting_id=posting.id, debt_delta=-payload.amount)
+    if representative is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Торговый представитель не найден")
 
-
-def warehouse_balances(session: Session, warehouse_id: UUID | None = None) -> list[WarehouseBalanceLine]:
-    statement = (
-        select(
-            Warehouse.id,
-            Warehouse.code,
-            Warehouse.name,
-            Product.id,
-            Product.sku,
-            Product.name,
-            Product.unit,
-            Product.retail_price,
-            Product.wholesale_price,
-            WarehouseStockBalance.quantity,
+    debt = await representative_debt(session, representative_location_id)
+    if amount > debt:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Сумма сдачи {amount} превышает текущую задолженность {debt}",
         )
-        .join(WarehouseStockBalance, WarehouseStockBalance.warehouse_id == Warehouse.id)
-        .join(Product, Product.id == WarehouseStockBalance.product_id)
-        .where(WarehouseStockBalance.quantity != 0)
-        .order_by(Warehouse.name, Product.name)
+    transaction = MoneyTransaction(
+        representative_location_id=representative_location_id,
+        kind=MoneyTransactionKind.CASH_HANDOVER,
+        amount=-amount,
+        created_by_id=created_by_id,
+        comment=comment,
+        client_operation_key=client_operation_key,
+        client_payload_hash=client_payload_hash,
     )
-    if warehouse_id is not None:
-        statement = statement.where(Warehouse.id == warehouse_id)
-
-    return [
-        WarehouseBalanceLine(
-            warehouse_id=row[0],
-            warehouse_code=row[1],
-            warehouse_name=row[2],
-            product_id=row[3],
-            sku=row[4],
-            product_name=row[5],
-            unit=row[6],
-            retail_price=row[7],
-            wholesale_price=row[8],
-            quantity=row[9],
+    session.add(transaction)
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        if client_operation_key is None or client_payload_hash is None:
+            raise
+        await session.rollback()
+        existing = await session.scalar(
+            select(MoneyTransaction).where(MoneyTransaction.client_operation_key == client_operation_key)
         )
-        for row in session.execute(statement)
-    ]
+        if existing is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Конфликт при регистрации операции") from exc
+        _check_money_key(existing, client_payload_hash)
+        return existing
+    await session.commit()
+    return transaction
 
 
-def representative_balances(
-    session: Session, representative_id: UUID | None = None
-) -> list[RepresentativeBalanceLine]:
-    statement = (
-        select(
-            Representative.id,
-            Representative.code,
-            Representative.name,
-            Product.id,
-            Product.sku,
-            Product.name,
-            Product.unit,
-            Product.retail_price,
-            Product.wholesale_price,
-            RepresentativeStockBalance.quantity,
+async def representative_debt(session: AsyncSession, representative_location_id: UUID) -> Decimal:
+    value = await session.scalar(
+        select(func.coalesce(func.sum(MoneyTransaction.amount), 0)).where(
+            MoneyTransaction.representative_location_id == representative_location_id
         )
-        .join(
-            RepresentativeStockBalance,
-            RepresentativeStockBalance.representative_id == Representative.id,
-        )
-        .join(Product, Product.id == RepresentativeStockBalance.product_id)
-        .where(RepresentativeStockBalance.quantity != 0)
-        .order_by(Representative.name, Product.name)
     )
-    if representative_id is not None:
-        statement = statement.where(Representative.id == representative_id)
-
-    return [
-        RepresentativeBalanceLine(
-            representative_id=row[0],
-            representative_code=row[1],
-            representative_name=row[2],
-            product_id=row[3],
-            sku=row[4],
-            product_name=row[5],
-            unit=row[6],
-            retail_price=row[7],
-            wholesale_price=row[8],
-            quantity=row[9],
-        )
-        for row in session.execute(statement)
-    ]
-
-
-def representative_debt(session: Session, representative_id: UUID) -> RepresentativeDebt:
-    _must_exist(session, Representative, representative_id, "Торговый представитель")
-    debt = Decimal(
-        session.scalar(
-            select(func.coalesce(func.sum(MoneyPosting.amount), 0)).where(
-                MoneyPosting.representative_id == representative_id
-            )
-        )
-        or 0
-    )
-    return RepresentativeDebt(representative_id=representative_id, debt=debt)
+    return Decimal(value)

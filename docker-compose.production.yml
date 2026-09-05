@@ -1,0 +1,88 @@
+name: ceh-sklad
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ceh_sklad}
+      POSTGRES_USER: ${POSTGRES_USER:-ceh}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Задайте POSTGRES_PASSWORD}
+    volumes:
+      - ceh_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ceh} -d ${POSTGRES_DB:-ceh_sklad}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - internal
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Задайте DATABASE_URL}
+      APP_NAME: ${APP_NAME:-Цех Склад}
+      ENVIRONMENT: production
+      CORS_ORIGINS: '["https://${CEH_DOMAIN:?Задайте CEH_DOMAIN}"]'
+      JWT_SECRET: ${JWT_SECRET:?Задайте JWT_SECRET}
+      ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-720}
+      BOOTSTRAP_ADMIN_LOGIN: ${BOOTSTRAP_ADMIN_LOGIN:?Задайте BOOTSTRAP_ADMIN_LOGIN}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?Задайте BOOTSTRAP_ADMIN_PASSWORD}
+      INTEGRATION_1C_API_KEY: ${INTEGRATION_1C_API_KEY:?Задайте INTEGRATION_1C_API_KEY}
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - internal
+
+  admin-web:
+    build:
+      context: ./admin-web
+      args:
+        VITE_API_BASE_URL: https://${CEH_DOMAIN:?Задайте CEH_DOMAIN}/api/v1
+    restart: unless-stopped
+    expose:
+      - "80"
+    networks:
+      - internal
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      CEH_DOMAIN: ${CEH_DOMAIN:?Задайте CEH_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?Задайте ACME_EMAIL}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_healthy
+      admin-web:
+        condition: service_started
+    networks:
+      - internal
+
+volumes:
+  ceh_postgres:
+  caddy_data:
+  caddy_config:
+
+networks:
+  internal:
+    driver: bridge

@@ -1,257 +1,104 @@
-# Цех — учет складских остатков
+# Цех Склад
 
-Система учета продукции на нескольких складах и у торговых представителей. Репозиторий содержит Android-приложение представителя, веб-панель администратора/руководителя и FastAPI backend с защищенным контуром интеграции с 1С.
+Монорепозиторий системы складского учета для нескольких складов и торговых представителей с Android-клиентом, web-панелью и интеграцией с **1С:Управление нашей фирмой (УНФ) в облаке**.
 
-## Реализовано
+## Что входит
 
-### Backend
+- `backend/` — FastAPI + PostgreSQL, транзакционное складское ядро, задолженность, роли, аудит, 1С/УНФ API;
+- `android/` — приложение торгового представителя с offline-кэшем, очередью неподтвержденных операций и realtime;
+- `admin-web/` — панель администратора/руководителя;
+- `unf-bridge/` — отдельный bridge к облачной УНФ/1С:Фреш с metadata-driven mapping, dry-run, health и идемпотентным экспортом;
+- `docs/` — архитектура, production, backup/restore, staging и интеграция УНФ Cloud;
+- `scripts/` — backup/restore, load-test и staging smoke.
 
-- несколько складов, товары и торговые представители;
-- розничная и оптовая цена товара;
-- приход, выдача представителю, перемещение между складами и возврат;
-- продажи, сдача денег и расчет задолженности;
-- неизменяемые товарные и денежные проводки;
-- текущие регистры остатков с транзакционной защитой от конкурентного списания;
-- безопасное сторнирование документов и ошибочных платежей;
-- аудит создания и сторно: пользователь и время операции;
-- идемпотентность операций по `external_id`;
-- JWT-аутентификация и роли `admin`, `manager`, `representative`;
-- пользователи и привязка учетной записи к существующему представителю;
-- отключение учетных записей, сброс пароля и немедленный отзыв ранее выданных JWT через `auth_version`;
-- управленческие отчеты;
-- WebSocket-события по остаткам, задолженности и каталогу;
-- отдельный одноразовый WebSocket-ticket для браузера;
-- Redis Pub/Sub fan-out для real-time между несколькими экземплярами backend;
-- Alembic-миграции, PostgreSQL/SQLite, pytest и Ruff;
-- защищенный API интеграции с 1С;
-- production Docker-контур с PostgreSQL, Redis, Nginx/TLS и Docker secrets;
-- Prometheus-метрики и структурированные JSON request-логи с request ID;
-- эксплуатационные скрипты резервного копирования и восстановления PostgreSQL;
-- CI-проверка реального PostgreSQL backup → restore → SQL-сверка.
+## Основные правила учета
 
-### Android
+- проведенные документы не редактируются задним числом;
+- исправления оформляются отдельной корректировкой;
+- остаток изменяется только транзакционно вместе с документом и движениями;
+- мобильная операция не уменьшает локальный остаток до подтверждения backend;
+- повторная доставка защищена идемпотентным `operation_key`;
+- розничная и оптовая цены хранятся отдельно;
+- каждому торговому представителю соответствует виртуальный склад `ceh-sklad`.
 
-- Kotlin + Jetpack Compose;
-- вход представителя через JWT, токен защищен Android Keystore;
-- складские остатки и две цены в реальном времени;
-- собственные остатки и задолженность;
-- продажа по розничной или оптовой цене;
-- возврат товара на выбранный склад;
-- собственная товарная и денежная история;
-- отображение сторно;
-- Room3-очередь продаж/возвратов при отсутствии сети;
-- WorkManager для автоматической повторной отправки;
-- детальный экран ожидающих и отклоненных операций;
-- ручной повтор отклоненных операций;
-- изоляция офлайн-очереди по торговому представителю;
-- защита от повторного проведения через исходный `external_id`;
-- WebSocket real-time;
-- отдельная GitHub Actions сборка debug APK;
-- CI-проверка release APK на одноразовом тестовом ключе;
-- release-сборка с обязательным HTTPS и подписью только из внешних секретов;
-- ручной GitHub Actions workflow для подписанных APK/AAB, проверки подписи и SHA-256.
+## 1С:УНФ Cloud
 
-### Веб-панель
+Универсальный обмен находится под `/api/v1/integration/1c`. Для целевой конфигурации УНФ Cloud дополнительно реализованы:
 
-- React + TypeScript + Vite;
-- доступ ролям администратора и руководителя;
-- KPI, склады, товары, представители и задолженность;
-- создание складов, товаров, представителей и пользователей;
-- отдельный admin-only экран пользователей со статусом доступа;
-- отключение/включение учетной записи и установка временного пароля;
-- немедленный отзыв старых сессий после отключения или смены пароля;
-- назначение/замена/снятие учетной записи представителя;
-- изменение розничной и оптовой цены;
-- приход, выдача, перемещение и прием денег;
-- журнал товарных документов и сторно;
-- денежный журнал и сторно платежа;
-- аудит авторов и отмен;
-- отчеты по периоду и представителям;
-- единый браузерный WebSocket с короткоживущим одноразовым ticket;
-- real-time обновление обзора, журналов и отчетов;
-- резервное REST-обновление раз в 60 секунд при отсутствии события;
-- production-сборка в Nginx с HTTPS/reverse proxy;
-- адаптивная верстка и отдельная CI-сборка.
+- `GET /api/v1/integration/1c/unf/profile` — версия/профиль контракта;
+- `GET /api/v1/integration/1c/unf/outbox` — неподтвержденные операции с готовым сопоставлением документов УНФ;
+- `POST /api/v1/integration/1c/confirm-export` и batch-вариант — идемпотентное подтверждение после фактической записи документа в УНФ.
 
-### Интеграция с 1С
+Базовое сопоставление:
 
-- отдельный заголовок `X-Integration-Key`;
-- snapshot складов, товаров, представителей, остатков и долгов;
-- товарный и денежный журналы;
-- курсорная инкрементальная выгрузка без повторного полного чтения;
-- сторнированный старый документ снова появляется в потоке изменений;
-- импорт прихода, выдачи, перемещения, возврата, продажи и платежа;
-- обязательный `external_id` и защита от повторного проведения;
-- постоянный реестр соответствий UUID backend ↔ ссылка 1С для складов, товаров и представителей;
-- получение всего реестра соответствий и разрешение ссылки 1С в UUID backend;
-- соответствия включаются в полный snapshot.
+- перемещения, выдача и возврат → `Перемещение запасов`;
+- продажа → `Расходная накладная`;
+- сдача выручки → `Поступление в кассу`;
+- положительная корректировка → `Оприходование запасов`;
+- отрицательная → `Списание запасов`;
+- смешанная корректировка помечается `requires_split=true` и разбивается bridge на два документа.
 
-Подробный контракт: `docs/1c-integration.md`.
+Учетные данные облачной УНФ не хранятся в Android/web. Между `ceh-sklad` и конкретным облачным tenant используется `unf-bridge`. Для 1С:Фреш он получает фактические EntitySet/поля из `$metadata`, а не зашивает имена объектов конкретной версии УНФ.
 
-## Структура
-
-- `backend/` — FastAPI, SQLAlchemy, Alembic и бизнес-логика;
-- `android/` — Android-приложение торгового представителя;
-- `admin-web/` — веб-панель администратора и руководителя;
-- `ops/` — эксплуатационные скрипты;
-- `docs/` — архитектура, правила учета, production, мониторинг, Android release и интеграция.
-
-## Быстрый запуск backend
+Безопасный порядок discovery/UAT:
 
 ```bash
-docker compose up
+# 1. Один read-only discovery с сервисными credentials из secret storage.
+ceh-unf-fresh-probe \
+  --url 'https://1cfresh.com/a/...' \
+  --details --all \
+  --snapshot /var/lib/ceh-unf/unf-metadata.json
+
+# 2. После заполнения non-secret mapping — offline-сверка без сети/credentials.
+ceh-unf-metadata-validate \
+  --mapping /etc/ceh-sklad/unf-tenant.json \
+  --snapshot /var/lib/ceh-unf/unf-metadata.json
+
+# 3. Статический бизнес-аудит mapping.
+ceh-unf-tenant-audit --mapping /etc/ceh-sklad/unf-tenant.json
+
+# 4. Перед записью — живая read-only проверка текущего tenant/backend/outbox.
+ceh-unf-fresh-health --mapping /etc/ceh-sklad/unf-tenant.json --limit 100
 ```
 
-Backend выполняет `alembic upgrade head` перед запуском API.
+Metadata snapshot не содержит логин, пароль или Authorization headers, но раскрывает URL/структуру tenant и поэтому хранится как внутренний UAT artifact. Offline-validator возвращает SHA-256 exact snapshot и mapping; эти digest фиксируются в release record. Tenant-specific касса, статья ДДС, payer и другие обязательные справочники проверяются через конфигурируемые `reference_checks` без изменения bridge-кода.
+
+Подробности: `docs/INTEGRATION_UNF_CLOUD.md`, `docs/UNF_BRIDGE_RUNBOOK.md`, `docs/UNF_TENANT_CHECKLIST.md`. Реальное подключение tenant отслеживается в issue #8.
+
+## Быстрый локальный запуск
+
+Создайте `.env` на основе `.env.example`, затем:
+
+```bash
+docker compose up --build
+```
 
 После запуска:
 
-- API: `http://localhost:8000`;
-- Swagger UI: `http://localhost:8000/docs`;
-- healthcheck: `http://localhost:8000/health`.
+- backend: `http://localhost:8000`;
+- OpenAPI: `http://localhost:8000/docs`;
+- web: `http://localhost:5173` при отдельном запуске Vite.
 
-Для первого администратора в новой базе один раз вызовите:
+Структура БД создается/обновляется только Alembic-миграциями.
 
-```http
-POST /api/v1/auth/bootstrap
-Content-Type: application/json
-
-{
-  "email": "admin@example.local",
-  "password": "replace-with-strong-password",
-  "full_name": "Администратор"
-}
-```
-
-Далее токен выдается `POST /api/v1/auth/token`; в поле `username` OAuth2-формы передается email.
-
-## Роли
-
-- `admin` — справочники, пользователи, цены, учетные операции и сторно;
-- `manager` — просмотр складов, товаров, остатков, задолженности, журналов и отчетов;
-- `representative` — просмотр складских цен/остатков, собственных остатков, задолженности и истории, регистрация своих продаж и возвратов.
-
-Сдача денег регистрируется администратором или доверенным контуром 1С. Представитель не может самостоятельно уменьшить собственную задолженность.
-
-## Управление доступом
-
-Администратор может отключить или повторно включить чужую учетную запись через веб-панель либо API. Отключенный пользователь не может выполнить новый вход, а его ранее выданные JWT перестают приниматься сразу.
-
-Смена пароля также отзывает все текущие токены пользователя. Механизм основан на `auth_version`, включенном в JWT и сверяемом с текущей версией пользователя в БД. Повторное включение пользователя не делает старые токены снова действительными.
-
-Собственную учетную запись текущий администратор отключить не может. При смене собственного пароля веб-панель очищает локальную сессию и требует повторный вход.
-
-## Основные API
-
-### Справочники и пользователи
-
-- `GET/POST /api/v1/warehouses`;
-- `GET/POST /api/v1/representatives`;
-- `PATCH /api/v1/representatives/{id}`;
-- `GET/POST /api/v1/products`;
-- `PATCH /api/v1/products/{id}`;
-- `GET/POST /api/v1/users`;
-- `GET /api/v1/users/access`;
-- `PATCH /api/v1/users/{id}/access`.
-
-### Остатки и деньги
-
-- `GET /api/v1/balances/warehouses`;
-- `GET /api/v1/balances/representatives`;
-- `GET /api/v1/representatives/{id}/debt`;
-- `GET /api/v1/money-postings`;
-- `POST /api/v1/money-postings/{id}/reverse`.
-
-### Операции
-
-- `POST /api/v1/operations/receipt`;
-- `POST /api/v1/operations/issue-to-representative`;
-- `POST /api/v1/operations/warehouse-transfer`;
-- `POST /api/v1/operations/representative-return`;
-- `POST /api/v1/operations/sale`;
-- `POST /api/v1/operations/payment`.
-
-### История и отчеты
-
-- `GET /api/v1/documents`;
-- `POST /api/v1/documents/{id}/cancel`;
-- `GET /api/v1/my/documents`;
-- `GET /api/v1/my/money-postings`;
-- `GET /api/v1/reports/summary`;
-- `GET /api/v1/reports/representatives`.
-
-### Интеграция 1С
-
-- `GET /api/v1/integration/1c/snapshot`;
-- `GET /api/v1/integration/1c/documents/changes`;
-- `GET /api/v1/integration/1c/money-postings/changes`;
-- `GET /api/v1/integration/1c/entity-links`;
-- `PUT /api/v1/integration/1c/entity-links`;
-- `GET /api/v1/integration/1c/entity-links/resolve`;
-- `POST /api/v1/integration/1c/operations/...`.
-
-## Real-time
-
-Android подключается к `/api/v1/ws/updates` и передает `Authorization: Bearer <access-token>`.
-
-Браузер сначала получает короткоживущий одноразовый ticket через `POST /api/v1/auth/ws-ticket`, затем подключается к `/api/v1/ws/browser-updates?ticket=<ticket>`. Основной JWT не попадает в URL WebSocket.
-
-При заданном `CEH_REDIS_URL` backend публикует события через общий Redis-канал, поэтому WebSocket-клиенты разных экземпляров backend получают одинаковые изменения. Без Redis сохраняется локальный in-memory режим для разработки.
-
-## Production
-
-Production-контур включает PostgreSQL, Redis, backend, Nginx/TLS и Prometheus. Секреты БД, JWT, Redis, интеграции 1С и TLS-ключ не хранятся в Git и подключаются через Docker secrets.
-
-Prometheus доступен только из внутреннего/локального контура, `/metrics` не проксируется публичным Nginx. HTTP-запросы пишутся в структурированный JSON-лог с request ID без JWT, ключа 1С и тел запросов.
-
-Инструкции: `docs/production.md` и `docs/monitoring.md`.
-
-GitHub Actions отдельно проверяет production Compose и реально собирает backend/web Docker-образы.
-
-## Резервные копии
-
-Создать проверенную custom-format копию PostgreSQL:
-
-```bash
-ops/backup-postgres.sh
-```
-
-Восстановление требует явного подтверждения:
-
-```bash
-CEH_CONFIRM_RESTORE=YES ops/restore-postgres.sh ./backups/<файл>.dump
-```
-
-Копия проверяется через `pg_restore --list` и сопровождается SHA-256. При неудачном restore backend/web остаются остановленными.
-
-Production CI дополнительно прогоняет реальный цикл на изолированном PostgreSQL: создает контрольные Unicode/decimal данные, формирует dump, восстанавливает чистую БД и сверяет данные SQL-запросом.
-
-Подробная процедура: `docs/backups.md`.
-
-## Учет и сторнирование
-
-Все товарные движения записываются в `stock_postings`. Текущие остатки дополнительно поддерживаются в отдельных таблицах и блокируются в транзакции при списании.
-
-Сторно не удаляет исходную историю. Документ получает `cancelled`, текущие остатки получают обратное движение, а денежное влияние компенсируется новой проводкой. Перед сторно проверяется, что обратное движение не создаст отрицательный остаток. Повторное сторно идемпотентно.
-
-## Офлайн Android
-
-При временной сетевой ошибке продажа или возврат сохраняется в Room3. WorkManager повторяет отправку с тем же `external_id`. Локальный клиент не меняет подтвержденные серверные остатки до успешного ответа backend. Постоянно отклоненные операции переходят в состояние проверки и могут быть повторены вручную.
-
-## Локальный запуск без Docker
+## Backend без Docker
 
 ```bash
 cd backend
 python -m venv .venv
-source .venv/bin/activate
-pip install -e .
+. .venv/bin/activate
+pip install -e '.[dev]'
 alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
-На Windows: `.venv\\Scripts\\activate`.
+Тесты требуют PostgreSQL и выполняются командой:
 
-## Веб-панель
+```bash
+pytest -q
+```
+
+## Web-панель
 
 ```bash
 cd admin-web
@@ -259,18 +106,67 @@ npm install
 npm run dev
 ```
 
-По умолчанию Vite доступен на `http://localhost:5173` и проксирует `/api` на локальный FastAPI.
+Production build требует явный HTTPS URL:
+
+```bash
+VITE_API_BASE_URL=https://sklad.example.ru/api/v1 npm run build
+```
+
+CI дополнительно проверяет, что `localhost:8000` не попал в production bundle.
 
 ## Android
 
-Откройте каталог `android/` в Android Studio. Debug-клиент по умолчанию обращается к backend эмулятора через `http://10.0.2.2:8000/`.
+Debug использует локальный emulator URL. Release требует production HTTPS API:
 
-Подписанная release-сборка требует внешний HTTPS URL и signing keystore из переменных окружения или GitHub Secrets. Подробная инструкция: `docs/android-release.md`.
+```bash
+gradle -p android :app:assembleRelease -PCEH_API_BASE_URL=https://sklad.example.ru/
+```
 
-## Следующий этап
+Release signing читается только из внешних секретов/переменных. Keystore не хранится в репозитории. Подробности — `docs/ANDROID_RELEASE.md`.
 
-- нагрузочные тесты конкурентных складских операций и Redis/WebSocket fan-out;
-- UI/E2E-тесты критических сценариев веб-панели;
-- UI/instrumentation тесты критических Android-сценариев;
-- сквозные интеграционные тесты обмена с 1С;
-- расширение Prometheus-алертов и эксплуатационных дашбордов.
+Android поддерживает:
+
+- вход только торгового представителя с привязанным виртуальным складом;
+- остатки обычных складов и собственный остаток;
+- корзину из нескольких товаров и розничную/оптовую цену;
+- продажу, возврат и сдачу денег;
+- долг и собственную историю;
+- Room-кэш подтвержденных данных;
+- Room/WorkManager очередь операций при отсутствии сети;
+- WebSocket с переподключением;
+- защищенную сессию через Android Keystore;
+- смену собственного пароля;
+- нейтральную обработку 401 и точный `Retry-After` при временной блокировке входа.
+
+## Безопасность
+
+- роли `representative`, `admin`, `manager` проверяются сервером;
+- пароли хэшируются Argon2;
+- JWT содержит отпечаток текущего password hash, поэтому смена/reset пароля инвалидирует старые REST/WSS сессии;
+- после пяти неверных паролей вход блокируется на пять минут в PostgreSQL;
+- production secrets имеют серверную валидацию;
+- backend Docker image работает от непривилегированного пользователя;
+- production Caddy включает TLS/security headers;
+- PostgreSQL и FastAPI не публикуются напрямую наружу в production Compose.
+
+## Эксплуатация
+
+- `/health` — liveness;
+- `/health/ready` — PostgreSQL + текущая Alembic revision;
+- `/api/v1/system/status` — admin/manager: очередь обмена, ошибки 1С, временно заблокированные аккаунты и готовность сопоставлений УНФ;
+- backup/restore drill является частью CI;
+- `Staging-приемка` умеет read-only проверку УНФ Cloud и строгий `require_unf_ready`;
+- нагрузочный сценарий по умолчанию dry-run; реальные продажи требуют отдельного флага подтверждения;
+- Android emulator smoke автоматически запускается только для последнего Android/workflow commit, а main CI не тратит Android build на чистые bridge/docs-коммиты в PR.
+
+## Production
+
+См.:
+
+- `docs/PRODUCTION.md`;
+- `docs/RELEASE_CHECKLIST.md`;
+- `docs/STAGING_ACCEPTANCE.md`;
+- `docs/INTEGRATION_UNF_CLOUD.md`;
+- `docs/UNF_BRIDGE_RUNBOOK.md`.
+
+PR #1 намеренно остается draft до фактического production/staging UAT, подписанного Android artifact и проверки реальной тестовой облачной УНФ.

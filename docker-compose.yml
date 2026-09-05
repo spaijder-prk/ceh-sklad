@@ -1,32 +1,30 @@
 services:
   db:
-    image: postgres:16-alpine
+    image: postgres:17
     environment:
-      POSTGRES_DB: ceh_sklad
-      POSTGRES_USER: ceh
-      POSTGRES_PASSWORD: ceh
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: ${POSTGRES_DB:-ceh_sklad}
+      POSTGRES_USER: ${POSTGRES_USER:-ceh}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ceh_dev}
     volumes:
-      - ceh_postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ceh -d ceh_sklad"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ceh} -d ${POSTGRES_DB:-ceh_sklad}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
   backend:
-    image: python:3.12-slim
-    working_dir: /app
-    volumes:
-      - ./backend:/app
+    build: ./backend
     environment:
-      CEH_DATABASE_URL: postgresql+psycopg://ceh:ceh@db:5432/ceh_sklad
-      CEH_AUTO_CREATE_SCHEMA: "false"
-      CEH_JWT_SECRET: "local-development-secret-change-me"
-      CEH_INTEGRATION_API_KEY: "${CEH_INTEGRATION_API_KEY:-}"
-    command: >
-      sh -c "pip install -e . && alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://ceh:ceh_dev@db:5432/ceh_sklad}
+      APP_NAME: ${APP_NAME:-Цех Склад}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      CORS_ORIGINS: '${CORS_ORIGINS:-["http://localhost:5173"]}'
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-720}
+      BOOTSTRAP_ADMIN_LOGIN: ${BOOTSTRAP_ADMIN_LOGIN:-admin}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-change-me}
+      INTEGRATION_1C_API_KEY: ${INTEGRATION_1C_API_KEY:-change-me-1c}
     ports:
       - "8000:8000"
     depends_on:
@@ -34,4 +32,4 @@ services:
         condition: service_healthy
 
 volumes:
-  ceh_postgres_data:
+  postgres_data:

@@ -1,21 +1,11 @@
-name: Сборка подписанного Android release
+name: Подписанный Android release
 
 on:
   workflow_dispatch:
     inputs:
       api_base_url:
-        description: "HTTPS-адрес production backend, например https://sklad.example.ru/"
+        description: HTTPS URL backend, например https://sklad.example.ru/
         required: true
-        type: string
-      version_name:
-        description: "Версия приложения, например 1.0.0"
-        required: true
-        default: "0.1.0"
-        type: string
-      version_code:
-        description: "Положительный Android versionCode"
-        required: true
-        default: "1"
         type: string
 
 permissions:
@@ -23,101 +13,80 @@ permissions:
 
 jobs:
   release:
+    name: Собрать и проверить подписанный APK
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: android
-    env:
-      CEH_ANDROID_API_BASE_URL: ${{ inputs.api_base_url }}
-      CEH_ANDROID_VERSION_NAME: ${{ inputs.version_name }}
-      CEH_ANDROID_VERSION_CODE: ${{ inputs.version_code }}
-      CEH_ANDROID_KEYSTORE_BASE64: ${{ secrets.CEH_ANDROID_KEYSTORE_BASE64 }}
-      CEH_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.CEH_ANDROID_KEYSTORE_PASSWORD }}
-      CEH_ANDROID_KEY_ALIAS: ${{ secrets.CEH_ANDROID_KEY_ALIAS }}
-      CEH_ANDROID_KEY_PASSWORD: ${{ secrets.CEH_ANDROID_KEY_PASSWORD }}
-
     steps:
       - name: Получить код
         uses: actions/checkout@v4
-
-      - name: Настроить Java
-        uses: actions/setup-java@v4
+      - name: Установить Java
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
-
-      - name: Настроить Gradle
+      - name: Установить Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "9.6.0"
-
-      - name: Проверить параметры release
-        shell: bash
+          gradle-version: "8.9"
+      - name: Проверить URL и наличие release secrets
+        env:
+          API_BASE_URL: ${{ inputs.api_base_url }}
+          KEYSTORE_BASE64: ${{ secrets.CEH_ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CEH_ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CEH_ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.CEH_ANDROID_KEY_PASSWORD }}
         run: |
-          set -Eeuo pipefail
-          if [[ ! "$CEH_ANDROID_API_BASE_URL" =~ ^https:// ]]; then
-            echo "::error::api_base_url должен начинаться с https://"
-            exit 2
-          fi
-          if [[ ! "$CEH_ANDROID_VERSION_CODE" =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::version_code должен быть положительным целым числом"
-            exit 2
-          fi
-          missing=0
-          for name in \
-            CEH_ANDROID_KEYSTORE_BASE64 \
-            CEH_ANDROID_KEYSTORE_PASSWORD \
-            CEH_ANDROID_KEY_ALIAS \
-            CEH_ANDROID_KEY_PASSWORD
-          do
-            if [[ -z "${!name:-}" ]]; then
-              echo "::error::Не задан GitHub Secret $name"
-              missing=1
-            fi
-          done
-          if [[ "$missing" -ne 0 ]]; then
-            exit 2
-          fi
+          python - "$API_BASE_URL" <<'PY'
+          import sys
+          from urllib.parse import urlparse
 
+          value = sys.argv[1].strip().rstrip('/')
+          parsed = urlparse(value)
+          if parsed.scheme != 'https' or not parsed.netloc or parsed.username or parsed.password:
+              raise SystemExit('api_base_url должен быть полноценным HTTPS origin без credentials')
+          if parsed.path not in {'', '/'} or parsed.query or parsed.fragment:
+              raise SystemExit('api_base_url не должен содержать path/query/fragment')
+          PY
+          test -n "$KEYSTORE_BASE64" || { echo "Не задан CEH_ANDROID_KEYSTORE_BASE64"; exit 2; }
+          test -n "$KEYSTORE_PASSWORD" || { echo "Не задан CEH_ANDROID_KEYSTORE_PASSWORD"; exit 2; }
+          test -n "$KEY_ALIAS" || { echo "Не задан CEH_ANDROID_KEY_ALIAS"; exit 2; }
+          test -n "$KEY_PASSWORD" || { echo "Не задан CEH_ANDROID_KEY_PASSWORD"; exit 2; }
       - name: Подготовить keystore
-        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.CEH_ANDROID_KEYSTORE_BASE64 }}
+        run: echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/ceh-sklad-release.keystore"
+      - name: Собрать подписанный release APK
+        env:
+          CEH_ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/ceh-sklad-release.keystore
+          CEH_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.CEH_ANDROID_KEYSTORE_PASSWORD }}
+          CEH_ANDROID_KEY_ALIAS: ${{ secrets.CEH_ANDROID_KEY_ALIAS }}
+          CEH_ANDROID_KEY_PASSWORD: ${{ secrets.CEH_ANDROID_KEY_PASSWORD }}
+        run: gradle -p android :app:assembleRelease -PCEH_API_BASE_URL="${{ inputs.api_base_url }}" --stacktrace
+      - name: Проверить подпись APK
         run: |
-          set -Eeuo pipefail
-          keystore="$RUNNER_TEMP/ceh-sklad-release.jks"
-          printf '%s' "$CEH_ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
-          test -s "$keystore"
-          chmod 600 "$keystore"
-          echo "CEH_ANDROID_KEYSTORE_FILE=$keystore" >> "$GITHUB_ENV"
-
-      - name: Собрать подписанные APK и AAB
-        run: gradle :app:assembleRelease :app:bundleRelease --stacktrace
-
-      - name: Проверить подпись APK и AAB
-        shell: bash
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          test -n "$APKSIGNER"
+          "$APKSIGNER" verify --verbose android/app/build/outputs/apk/release/app-release.apk
+      - name: Сформировать release manifest
+        env:
+          API_BASE_URL: ${{ inputs.api_base_url }}
         run: |
-          set -Eeuo pipefail
-          apk="app/build/outputs/apk/release/app-release.apk"
-          aab="app/build/outputs/bundle/release/app-release.aab"
-          test -s "$apk"
-          test -s "$aab"
-
-          apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
-          if [[ -z "$apksigner" ]]; then
-            echo "Не найден apksigner в Android SDK" >&2
-            exit 2
-          fi
-          "$apksigner" verify --verbose --print-certs "$apk"
-          jarsigner -verify -verbose -certs "$aab"
-
-          sha256sum "$apk" "$aab" | tee release-sha256.txt
-
-      - name: Сохранить release-артефакты
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          test -n "$APKSIGNER"
+          python scripts/android_release_manifest.py \
+            --apk android/app/build/outputs/apk/release/app-release.apk \
+            --metadata android/app/build/outputs/apk/release/output-metadata.json \
+            --api-base-url "$API_BASE_URL" \
+            --apksigner "$APKSIGNER" \
+            --output "$RUNNER_TEMP/android-release-manifest.json"
+      - name: Сохранить подписанный APK и manifest
         uses: actions/upload-artifact@v4
         with:
-          name: ceh-sklad-android-${{ inputs.version_name }}-${{ inputs.version_code }}
+          name: ceh-sklad-release-apk
           path: |
             android/app/build/outputs/apk/release/app-release.apk
-            android/app/build/outputs/bundle/release/app-release.aab
-            android/release-sha256.txt
+            ${{ runner.temp }}/android-release-manifest.json
           if-no-files-found: error
           retention-days: 14
+      - name: Удалить временный keystore
+        if: ${{ always() }}
+        run: rm -f "$RUNNER_TEMP/ceh-sklad-release.keystore"

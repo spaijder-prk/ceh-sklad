@@ -1,0 +1,24 @@
+[Unit]
+Description=Read-only health bridge ceh-sklad -> 1С:УНФ
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ceh-unf
+Group=ceh-unf
+EnvironmentFile=/etc/ceh-sklad/unf-bridge.env
+StateDirectory=ceh-unf
+ExecStart=/opt/ceh-sklad-unf/bin/ceh-unf-fresh-health --mapping /etc/ceh-sklad/unf-tenant.json --limit 100
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true
+StandardOutput=journal
+StandardError=journal

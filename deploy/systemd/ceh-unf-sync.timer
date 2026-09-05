@@ -1,0 +1,12 @@
+[Unit]
+Description=Периодический экспорт outbox ceh-sklad в 1С:УНФ
+
+[Timer]
+OnBootSec=8min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=ceh-unf-sync.service
+
+[Install]
+WantedBy=timers.target

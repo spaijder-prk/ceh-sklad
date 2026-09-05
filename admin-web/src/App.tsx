@@ -1,365 +1,415 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
-import { AdminTools } from "./AdminTools";
-import { DocumentsView } from "./DocumentsView";
-import { MoneyView } from "./MoneyView";
-import { ReportsView } from "./ReportsView";
-import { UserAccessView } from "./UserAccessView";
-import { useRealtimeUpdates } from "./realtime";
-import {
-  ApiError,
-  DashboardData,
-  clearToken,
-  hasToken,
-  loadDashboard,
-  login,
-} from "./api";
+import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { responseErrorMessage } from './apiErrors'
 
-type View = "overview" | "warehouses" | "catalog" | "representatives" | "documents" | "money" | "reports" | "users" | "admin";
+type Amount = number | string
 
-const money = new Intl.NumberFormat("ru-RU", {
-  style: "currency",
-  currency: "RUB",
-  minimumFractionDigits: 2,
-});
-const number = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 3 });
+type Stock = {
+  location_id: string
+  location_name: string
+  product_id: string
+  sku: string
+  product_name: string
+  unit_name: string
+  quantity: Amount
+  retail_price: Amount
+  wholesale_price: Amount
+}
+
+type Location = { id: string; name: string; kind: 'warehouse' | 'representative'; external_1c_id?: string | null }
+type Product = { id: string; sku: string; name: string; unit_name: string; retail_price: Amount; wholesale_price: Amount }
+type User = { id: string; name: string; login: string; role: 'representative' | 'admin' | 'manager'; location_id?: string | null }
+type Debt = { representative_location_id: string; representative_name: string; debt: Amount }
+type StockOperationLine = { product_id: string; sku: string; product_name: string; unit_name: string; quantity: Amount; unit_price?: Amount | null }
+type StockOperation = {
+  id: string
+  kind: string
+  source_location_name?: string | null
+  destination_location_name?: string | null
+  created_by_name?: string | null
+  comment?: string | null
+  created_at: string
+  external_1c_id?: string | null
+  synced_1c_at?: string | null
+  lines: StockOperationLine[]
+}
+type MoneyOperation = {
+  id: string
+  representative_name: string
+  kind: string
+  amount: Amount
+  created_by_name?: string | null
+  comment?: string | null
+  created_at: string
+  external_1c_id?: string | null
+  synced_1c_at?: string | null
+}
+type RepresentativeReport = {
+  representative_location_id: string
+  representative_name: string
+  sales_count: number
+  sales_amount: Amount
+  cash_handover_amount: Amount
+  current_debt: Amount
+}
+type IntegrationLog = {
+  id: string
+  direction: string
+  operation_key: string
+  entity_type: string
+  external_1c_id?: string | null
+  status: string
+  error_message?: string | null
+  created_at: string
+}
+
+const API = 'http://localhost:8000/api/v1'
+
+const stockKindLabel: Record<string, string> = {
+  transfer: 'Перемещение',
+  issue_to_representative: 'Выдача представителю',
+  representative_return: 'Возврат от представителя',
+  sale: 'Продажа',
+  adjustment: 'Корректировка',
+}
+
+const moneyKindLabel: Record<string, string> = {
+  sale: 'Продажа',
+  cash_handover: 'Сдача денег',
+  adjustment: 'Корректировка',
+}
+
+function formatDate(value: string) {
+  return new Date(value).toLocaleString('ru-RU')
+}
 
 export default function App() {
-  const [data, setData] = useState<DashboardData | null>(null);
-  const [view, setView] = useState<View>("overview");
-  const [loading, setLoading] = useState(hasToken());
-  const [error, setError] = useState<string | null>(null);
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [token, setToken] = useState(() => localStorage.getItem('ceh-token') ?? '')
+  const [login, setLogin] = useState('')
+  const [password, setPassword] = useState('')
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [currentUser, setCurrentUser] = useState<User | null>(null)
+  const [stocks, setStocks] = useState<Stock[]>([])
+  const [locations, setLocations] = useState<Location[]>([])
+  const [products, setProducts] = useState<Product[]>([])
+  const [users, setUsers] = useState<User[]>([])
+  const [debts, setDebts] = useState<Debt[]>([])
+  const [stockOperations, setStockOperations] = useState<StockOperation[]>([])
+  const [moneyOperations, setMoneyOperations] = useState<MoneyOperation[]>([])
+  const [report, setReport] = useState<RepresentativeReport[]>([])
+  const [integrationLogs, setIntegrationLogs] = useState<IntegrationLog[]>([])
+  const [query, setQuery] = useState('')
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
 
-  const refresh = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
-    try {
-      const next = await loadDashboard();
-      setData(next);
-      setError(null);
-      setLastUpdated(new Date());
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : "Не удалось загрузить данные";
-      setError(message);
-      if (caught instanceof ApiError && (caught.status === 401 || caught.status === 403)) {
-        clearToken();
-        setData(null);
-        setView("overview");
-      }
-    } finally {
-      if (!silent) setLoading(false);
+  async function api<T>(path: string, options: RequestInit = {}, currentToken = token): Promise<T> {
+    const headers = new Headers(options.headers)
+    if (currentToken) headers.set('Authorization', `Bearer ${currentToken}`)
+    if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
+    const response = await fetch(`${API}${path}`, { ...options, headers })
+    if (response.status === 401) {
+      signOut()
+      throw new Error('Сессия завершена')
     }
-  }, []);
-
-  const realtimeStatus = useRealtimeUpdates(Boolean(data), refresh);
-
-  useEffect(() => {
-    if (hasToken()) void refresh();
-  }, [refresh]);
-
-  useEffect(() => {
-    if (!data) return;
-    const timer = window.setInterval(() => void refresh(true), 60_000);
-    return () => window.clearInterval(timer);
-  }, [data, refresh]);
-
-  const logout = () => {
-    clearToken();
-    setData(null);
-    setError(null);
-    setView("overview");
-  };
-
-  if (!data) {
-    return (
-      <LoginScreen
-        loading={loading}
-        error={error}
-        onLoggedIn={async () => {
-          setLoading(true);
-          await refresh();
-        }}
-      />
-    );
+    if (!response.ok) throw new Error(await responseErrorMessage(response))
+    return response.json() as Promise<T>
   }
 
-  const isAdmin = data.user.role === "admin";
-  const adminOnlyView = view === "users" || view === "admin";
-  const effectiveView: View = !isAdmin && adminOnlyView ? "overview" : view;
-  const realtimeLabel = realtimeStatus === "online"
-    ? "Реальное время"
-    : realtimeStatus === "connecting"
-      ? "Подключение real-time…"
-      : "Резервное обновление · 60 сек";
-
-  return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark">Ц</div>
-          <div>
-            <strong>Цех</strong>
-            <span>складской учет</span>
-          </div>
-        </div>
-        <nav className="nav">
-          <NavButton active={effectiveView === "overview"} onClick={() => setView("overview")}>Обзор</NavButton>
-          <NavButton active={effectiveView === "warehouses"} onClick={() => setView("warehouses")}>Склады</NavButton>
-          <NavButton active={effectiveView === "catalog"} onClick={() => setView("catalog")}>Товары</NavButton>
-          <NavButton active={effectiveView === "representatives"} onClick={() => setView("representatives")}>Представители</NavButton>
-          <NavButton active={effectiveView === "documents"} onClick={() => setView("documents")}>Документы</NavButton>
-          <NavButton active={effectiveView === "money"} onClick={() => setView("money")}>Деньги</NavButton>
-          <NavButton active={effectiveView === "reports"} onClick={() => setView("reports")}>Отчёты</NavButton>
-          {isAdmin && (
-            <>
-              <NavButton active={effectiveView === "users"} onClick={() => setView("users")}>Пользователи</NavButton>
-              <NavButton active={effectiveView === "admin"} onClick={() => setView("admin")}>Администрирование</NavButton>
-            </>
-          )}
-        </nav>
-        <div className="sidebar-footer">
-          <span className="role-badge">{isAdmin ? "Администратор" : "Руководитель"}</span>
-          <strong>{data.user.full_name}</strong>
-          <span>{data.user.email}</span>
-          <button className="ghost-button" onClick={logout}>Выйти</button>
-        </div>
-      </aside>
-
-      <main className="content">
-        <header className="topbar">
-          <div>
-            <p className="eyebrow">Панель управления</p>
-            <h1>{viewTitle(effectiveView)}</h1>
-          </div>
-          <div className="refresh-area">
-            <span>{lastUpdated ? `Обновлено ${lastUpdated.toLocaleTimeString("ru-RU")}` : ""}</span>
-            <span className="auto-refresh">{realtimeLabel}</span>
-            <button className="secondary-button" disabled={loading} onClick={() => void refresh()}>
-              {loading ? "Обновление…" : "Обновить"}
-            </button>
-          </div>
-        </header>
-
-        {error && <div className="alert error">{error}</div>}
-        {effectiveView === "overview" && <Overview data={data} />}
-        {effectiveView === "warehouses" && <Warehouses data={data} />}
-        {effectiveView === "catalog" && <Catalog data={data} />}
-        {effectiveView === "representatives" && <Representatives data={data} />}
-        {effectiveView === "documents" && <DocumentsView isAdmin={isAdmin} onChanged={() => refresh()} />}
-        {effectiveView === "money" && <MoneyView isAdmin={isAdmin} onChanged={() => refresh()} />}
-        {effectiveView === "reports" && <ReportsView />}
-        {effectiveView === "users" && isAdmin && <UserAccessView currentUserId={data.user.id} />}
-        {effectiveView === "admin" && isAdmin && <AdminTools data={data} onChanged={() => refresh()} />}
-      </main>
-    </div>
-  );
-}
-
-function LoginScreen({ loading, error, onLoggedIn }: { loading: boolean; error: string | null; onLoggedIn: () => Promise<void> }) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [localError, setLocalError] = useState<string | null>(null);
-
-  const submit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setLocalError(null);
+  async function signIn(event: FormEvent) {
+    event.preventDefault()
+    setError('')
     try {
-      const user = await login(email, password);
-      if (user.role === "representative") {
-        clearToken();
-        throw new Error("Веб-панель предназначена для администратора и руководителя");
+      const response = await fetch(`${API}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ login, password }),
+      })
+      if (!response.ok) {
+        const fallback = response.status === 401 ? 'Неверный логин или пароль' : undefined
+        throw new Error(await responseErrorMessage(response, fallback))
       }
-      await onLoggedIn();
-    } catch (caught) {
-      setLocalError(caught instanceof Error ? caught.message : "Не удалось выполнить вход");
+      const data = await response.json() as { access_token: string }
+      localStorage.setItem('ceh-token', data.access_token)
+      setToken(data.access_token)
+    } catch (e) {
+      setError(String(e).replace('Error: ', ''))
     }
-  };
+  }
+
+  function signOut() {
+    localStorage.removeItem('ceh-token')
+    setToken('')
+    setCurrentUser(null)
+    setStocks([])
+    setLocations([])
+    setProducts([])
+    setUsers([])
+    setDebts([])
+    setStockOperations([])
+    setMoneyOperations([])
+    setReport([])
+    setIntegrationLogs([])
+  }
+
+  async function load(currentToken = token) {
+    if (!currentToken) return
+    setError('')
+    try {
+      const me = await api<User>('/auth/me', {}, currentToken)
+      setCurrentUser(me)
+      const [stockRows, locationRows, productRows] = await Promise.all([
+        api<Stock[]>('/stocks', {}, currentToken),
+        api<Location[]>('/locations', {}, currentToken),
+        api<Product[]>('/products', {}, currentToken),
+      ])
+      setStocks(stockRows)
+      setLocations(locationRows)
+      setProducts(productRows)
+      if (me.role === 'admin') setUsers(await api<User[]>('/admin/users', {}, currentToken))
+      else setUsers([])
+      if (me.role === 'admin' || me.role === 'manager') {
+        const [debtRows, stockHistory, moneyHistory, reportRows, syncRows] = await Promise.all([
+          api<Debt[]>('/representatives/debts/all', {}, currentToken),
+          api<StockOperation[]>('/operations/stock?limit=100', {}, currentToken),
+          api<MoneyOperation[]>('/operations/money?limit=100', {}, currentToken),
+          api<RepresentativeReport[]>('/reports/representatives', {}, currentToken),
+          api<IntegrationLog[]>('/admin/integration-1c/logs?limit=50', {}, currentToken),
+        ])
+        setDebts(debtRows)
+        setStockOperations(stockHistory)
+        setMoneyOperations(moneyHistory)
+        setReport(reportRows)
+        setIntegrationLogs(syncRows)
+      } else {
+        setDebts([])
+        setStockOperations([])
+        setMoneyOperations([])
+        setReport([])
+        setIntegrationLogs([])
+      }
+    } catch (e) {
+      setError(String(e).replace('Error: ', ''))
+    }
+  }
+
+  async function action(path: string, body: unknown, success: string) {
+    setError('')
+    setNotice('')
+    try {
+      await api(path, { method: 'POST', body: JSON.stringify(body) })
+      setNotice(success)
+      await load()
+    } catch (e) {
+      setError(String(e).replace('Error: ', ''))
+    }
+  }
+
+  async function changeOwnPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setError('')
+    setNotice('')
+    try {
+      await api('/auth/change-password', {
+        method: 'POST',
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      })
+      setCurrentPassword('')
+      setNewPassword('')
+      signOut()
+      setError('Пароль изменен. Войдите повторно с новым паролем.')
+    } catch (e) {
+      setError(String(e).replace('Error: ', ''))
+    }
+  }
+
+  useEffect(() => { if (token) void load(token) }, [token])
+
+  useEffect(() => {
+    if (!token) return
+    const wsBase = API.replace('http://', 'ws://').replace('https://', 'wss://').replace('/api/v1', '')
+    const socket = new WebSocket(`${wsBase}/api/v1/realtime?token=${encodeURIComponent(token)}`)
+    socket.onmessage = () => void load(token)
+    return () => socket.close()
+  }, [token])
+
+  const filtered = useMemo(() => {
+    const value = query.trim().toLowerCase()
+    if (!value) return stocks
+    return stocks.filter((item) => `${item.product_name} ${item.sku} ${item.location_name}`.toLowerCase().includes(value))
+  }, [stocks, query])
+
+  if (!token) {
+    return (
+      <main className="login-page">
+        <form className="login-card" onSubmit={signIn}>
+          <p className="eyebrow">Панель управления</p>
+          <h1>Цех Склад</h1>
+          <label>Логин<input value={login} onChange={(e) => setLogin(e.target.value)} autoComplete="username" maxLength={100} /></label>
+          <label>Пароль<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" maxLength={128} /></label>
+          {error && <p className="error">{error}</p>}
+          <button type="submit">Войти</button>
+        </form>
+      </main>
+    )
+  }
+
+  if (currentUser?.role === 'representative') {
+    return <main><section className="panel"><h1>Цех Склад</h1><p>Для торгового представителя предназначено Android-приложение.</p><button onClick={signOut}>Выйти</button></section></main>
+  }
+
+  const totalPositions = new Set(stocks.map((item) => item.product_id)).size
+  const warehouseCount = locations.filter((item) => item.kind === 'warehouse').length
+  const representativeCount = locations.filter((item) => item.kind === 'representative').length
 
   return (
-    <div className="login-page">
-      <section className="login-intro">
-        <div className="brand large">
-          <div className="brand-mark">Ц</div>
-          <div><strong>Цех</strong><span>управление складом</span></div>
+    <main>
+      <header>
+        <div>
+          <p className="eyebrow">{currentUser?.role === 'manager' ? 'Панель руководителя' : 'Панель администратора'}</p>
+          <h1>Цех Склад</h1>
+          <small>{currentUser?.name}</small>
         </div>
-        <h1>Остатки, продажи и задолженность в одном окне.</h1>
-        <p>Рабочее место администратора и руководителя. Данные загружаются напрямую из серверного регистра учета.</p>
-        <div className="login-points">
-          <span>Несколько складов</span><span>Розница и опт</span><span>Контроль представителей</span>
+        <div className="actions"><button onClick={() => void load()}>Обновить</button><button className="secondary" onClick={signOut}>Выйти</button></div>
+      </header>
+
+      {error && <p className="message error">{error}</p>}
+      {notice && <p className="message notice">{notice}</p>}
+
+      <section className="metrics">
+        <article><span>Товарных позиций</span><strong>{totalPositions}</strong></article>
+        <article><span>Складов</span><strong>{warehouseCount}</strong></article>
+        <article><span>Представителей</span><strong>{representativeCount}</strong></article>
+      </section>
+
+      <section className="panel">
+        <h2>Безопасность учетной записи</h2>
+        <div className="forms-grid">
+          <form onSubmit={changeOwnPassword}>
+            <h3>Сменить пароль</h3>
+            <input type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} required maxLength={128} autoComplete="current-password" placeholder="Текущий пароль" />
+            <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required minLength={10} maxLength={128} autoComplete="new-password" placeholder="Новый пароль: минимум 10 символов" />
+            <small>Новый пароль должен содержать буквы и цифры. После смены потребуется повторный вход.</small>
+            <button>Сменить пароль</button>
+          </form>
         </div>
       </section>
-      <form className="login-card" onSubmit={submit}>
-        <p className="eyebrow">Авторизация</p>
-        <h2>Вход в панель</h2>
-        <label>Email<input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" /></label>
-        <label>Пароль<input type="password" required value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" /></label>
-        {(localError || error) && <div className="alert error">{localError || error}</div>}
-        <button className="primary-button" disabled={loading}>{loading ? "Вход…" : "Войти"}</button>
-        <small>Доступ разрешен ролям администратора и руководителя.</small>
-      </form>
-    </div>
-  );
+
+      <section className="panel">
+        <div className="toolbar"><h2>Остатки и цены</h2><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Товар, артикул или склад" /></div>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Склад / представитель</th><th>Товар</th><th>Остаток</th><th>Розница</th><th>Опт</th></tr></thead>
+            <tbody>{filtered.map((item) => <tr key={`${item.location_id}:${item.product_id}`}><td>{item.location_name}</td><td><b>{item.product_name}</b><small>{item.sku}</small></td><td>{item.quantity} {item.unit_name}</td><td>{item.retail_price}</td><td>{item.wholesale_price}</td></tr>)}</tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="panel">
+        <h2>Финансовый отчет по представителям</h2>
+        <div className="table-wrap"><table><thead><tr><th>Представитель</th><th>Продаж</th><th>Сумма продаж</th><th>Сдано денег</th><th>Текущий долг</th></tr></thead><tbody>{report.map((item) => <tr key={item.representative_location_id}><td>{item.representative_name}</td><td>{item.sales_count}</td><td>{item.sales_amount}</td><td>{item.cash_handover_amount}</td><td>{item.current_debt}</td></tr>)}</tbody></table></div>
+      </section>
+
+      <section className="panel">
+        <h2>Задолженность торговых представителей</h2>
+        <div className="table-wrap"><table><thead><tr><th>Представитель</th><th>Задолженность</th></tr></thead><tbody>{debts.map((item) => <tr key={item.representative_location_id}><td>{item.representative_name}</td><td>{item.debt}</td></tr>)}</tbody></table></div>
+      </section>
+
+      <section className="panel">
+        <h2>Журнал товарных операций</h2>
+        <div className="table-wrap"><table><thead><tr><th>Дата</th><th>Операция</th><th>Направление</th><th>Товары</th><th>Пользователь</th><th>1С</th></tr></thead><tbody>{stockOperations.map((item) => <tr key={item.id}><td>{formatDate(item.created_at)}</td><td><b>{stockKindLabel[item.kind] ?? item.kind}</b><small>{item.comment}</small></td><td>{item.source_location_name ?? '—'} → {item.destination_location_name ?? '—'}</td><td>{item.lines.map((line) => <small key={line.product_id}>{line.product_name}: {line.quantity} {line.unit_name}{line.unit_price != null ? ` × ${line.unit_price}` : ''}</small>)}</td><td>{item.created_by_name ?? 'Система / 1С'}</td><td>{item.synced_1c_at ? `✓ ${item.external_1c_id ?? ''}` : 'Ожидает'}</td></tr>)}</tbody></table></div>
+      </section>
+
+      <section className="panel">
+        <h2>Журнал денежных операций</h2>
+        <div className="table-wrap"><table><thead><tr><th>Дата</th><th>Представитель</th><th>Операция</th><th>Сумма в регистре</th><th>Пользователь</th><th>1С</th></tr></thead><tbody>{moneyOperations.map((item) => <tr key={item.id}><td>{formatDate(item.created_at)}</td><td>{item.representative_name}</td><td><b>{moneyKindLabel[item.kind] ?? item.kind}</b><small>{item.comment}</small></td><td>{item.amount}</td><td>{item.created_by_name ?? 'Система'}</td><td>{item.kind === 'sale' ? 'В составе продажи' : item.synced_1c_at ? `✓ ${item.external_1c_id ?? ''}` : 'Ожидает'}</td></tr>)}</tbody></table></div>
+      </section>
+
+      <section className="panel">
+        <h2>Журнал обмена с 1С</h2>
+        <div className="table-wrap"><table><thead><tr><th>Дата</th><th>Направление</th><th>Объект</th><th>Ключ</th><th>Статус</th><th>Ошибка</th></tr></thead><tbody>{integrationLogs.map((item) => <tr key={item.id}><td>{formatDate(item.created_at)}</td><td>{item.direction === 'inbound' ? '1С → Склад' : 'Склад → 1С'}</td><td>{item.entity_type}<small>{item.external_1c_id}</small></td><td>{item.operation_key}</td><td>{item.status}</td><td>{item.error_message ?? '—'}</td></tr>)}</tbody></table></div>
+      </section>
+
+      {currentUser?.role === 'admin' && <AdminTools locations={locations} products={products} users={users} action={action} />}
+    </main>
+  )
 }
 
-function Overview({ data }: { data: DashboardData }) {
-  const stockRetail = data.warehouseBalances.reduce(
-    (sum, row) => sum + Number(row.quantity) * Number(row.retail_price),
-    0,
-  );
-  const totalDebt = Object.values(data.debts).reduce((sum, value) => sum + value, 0);
-  const debtRows = data.representatives
-    .map((representative) => ({ ...representative, debt: data.debts[representative.id] ?? 0 }))
-    .sort((left, right) => right.debt - left.debt)
-    .slice(0, 6);
-  const warehouseStats = data.warehouses.map((warehouse) => {
-    const rows = data.warehouseBalances.filter((row) => row.warehouse_id === warehouse.id);
-    return {
-      ...warehouse,
-      positions: rows.length,
-      value: rows.reduce(
-        (sum, row) => sum + Number(row.quantity) * Number(row.retail_price),
-        0,
-      ),
-    };
-  });
+function AdminTools({ locations, products, users, action }: { locations: Location[]; products: Product[]; users: User[]; action: (path: string, body: unknown, success: string) => Promise<void> }) {
+  const warehouses = locations.filter((item) => item.kind === 'warehouse')
+  const representatives = locations.filter((item) => item.kind === 'representative')
+
+  async function createLocation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    await action('/admin/locations', { name: form.get('name'), kind: form.get('kind') }, 'Место хранения создано')
+    event.currentTarget.reset()
+  }
+
+  async function createProduct(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    await action('/admin/products', {
+      sku: form.get('sku'), name: form.get('name'), unit_name: form.get('unit_name'),
+      retail_price: Number(form.get('retail_price')), wholesale_price: Number(form.get('wholesale_price')),
+    }, 'Товар создан')
+    event.currentTarget.reset()
+  }
+
+  async function createUser(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    const role = String(form.get('role'))
+    await action('/admin/users', {
+      name: form.get('name'), login: form.get('login'), password: form.get('password'), role,
+      location_id: role === 'representative' ? form.get('location_id') : null,
+    }, 'Пользователь создан')
+    event.currentTarget.reset()
+  }
+
+  async function resetPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    const userId = String(form.get('user_id'))
+    await action(`/admin/users/${userId}/reset-password`, {
+      new_password: form.get('new_password'),
+    }, 'Пароль пользователя сброшен; старые сессии недействительны')
+    event.currentTarget.reset()
+  }
+
+  async function adjust(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    await action('/stock/adjustments', {
+      location_id: form.get('location_id'),
+      items: [{ product_id: form.get('product_id'), quantity_delta: Number(form.get('quantity_delta')) }],
+      comment: form.get('comment'),
+    }, 'Остаток скорректирован')
+  }
+
+  async function move(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    const operation = String(form.get('operation'))
+    const path = operation === 'issue' ? '/stock/issue-to-representative' : '/stock/transfers'
+    await action(path, {
+      source_location_id: form.get('source_location_id'), destination_location_id: form.get('destination_location_id'),
+      items: [{ product_id: form.get('product_id'), quantity: Number(form.get('quantity')) }], comment: form.get('comment') || null,
+    }, operation === 'issue' ? 'Товар выдан представителю' : 'Перемещение проведено')
+  }
 
   return (
     <>
-      <section className="kpi-grid">
-        <Kpi label="Складов" value={String(data.warehouses.length)} hint={`${data.warehouseBalances.length} позиций с остатком`} />
-        <Kpi label="Товаров" value={String(data.products.length)} hint="активный каталог" />
-        <Kpi label="Остаток по рознице" value={money.format(stockRetail)} hint="оценка текущего склада" />
-        <Kpi label="Долг представителей" value={money.format(totalDebt)} hint={`${data.representatives.length} представителей`} danger={totalDebt > 0} />
-      </section>
+      <section className="panel"><h2>Администрирование справочников</h2><div className="forms-grid">
+        <form onSubmit={createLocation}><h3>Новое место хранения</h3><input name="name" required placeholder="Название" /><select name="kind"><option value="warehouse">Склад</option><option value="representative">Торговый представитель</option></select><button>Создать</button></form>
+        <form onSubmit={createProduct}><h3>Новый товар</h3><input name="sku" required placeholder="Артикул" /><input name="name" required placeholder="Название" /><input name="unit_name" defaultValue="шт" required placeholder="Единица" /><input name="retail_price" type="number" min="0" step="0.01" required placeholder="Розничная цена" /><input name="wholesale_price" type="number" min="0" step="0.01" required placeholder="Оптовая цена" /><button>Создать</button></form>
+        <form onSubmit={createUser}><h3>Новый пользователь</h3><input name="name" required placeholder="Имя" /><input name="login" required minLength={3} maxLength={100} placeholder="Логин" /><input name="password" type="password" required minLength={10} maxLength={128} autoComplete="new-password" placeholder="Пароль: минимум 10 символов" /><select name="role"><option value="representative">Торговый представитель</option><option value="manager">Руководитель</option><option value="admin">Администратор</option></select><select name="location_id"><option value="">Виртуальный склад</option>{representatives.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select><button>Создать</button><small>Пользователей: {users.length}</small></form>
+        <form onSubmit={resetPassword}><h3>Сброс пароля</h3><select name="user_id" required><option value="">Пользователь</option>{users.map((item) => <option value={item.id} key={item.id}>{item.name} ({item.login})</option>)}</select><input name="new_password" type="password" required minLength={10} maxLength={128} autoComplete="new-password" placeholder="Новый пароль" /><small>После сброса все старые сессии пользователя перестанут работать.</small><button>Сбросить пароль</button></form>
+      </div></section>
 
-      <section className="two-column">
-        <Panel title="Склады" subtitle="Розничная оценка текущих остатков">
-          <div className="stack-list">
-            {warehouseStats.map((warehouse) => (
-              <div className="stack-row" key={warehouse.id}>
-                <div><strong>{warehouse.name}</strong><span>{warehouse.code} · {warehouse.positions} позиций</span></div>
-                <strong>{money.format(warehouse.value)}</strong>
-              </div>
-            ))}
-            {warehouseStats.length === 0 && <Empty text="Склады еще не созданы" />}
-          </div>
-        </Panel>
-        <Panel title="Задолженность" subtitle="Представители с наибольшей текущей задолженностью">
-          <div className="stack-list">
-            {debtRows.map((representative) => (
-              <div className="stack-row" key={representative.id}>
-                <div><strong>{representative.name}</strong><span>{representative.code}</span></div>
-                <strong className={representative.debt > 0 ? "danger-text" : ""}>{money.format(representative.debt)}</strong>
-              </div>
-            ))}
-            {debtRows.length === 0 && <Empty text="Представителей еще нет" />}
-          </div>
-        </Panel>
-      </section>
+      <section className="panel"><h2>Операции склада</h2><div className="forms-grid">
+        <form onSubmit={adjust}><h3>Начальный остаток / корректировка</h3><select name="location_id" required><option value="">Место хранения</option>{locations.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select><select name="product_id" required><option value="">Товар</option>{products.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select><input name="quantity_delta" type="number" step="0.001" required placeholder="Изменение количества" /><input name="comment" required minLength={3} placeholder="Причина корректировки" /><button>Провести</button></form>
+        <form onSubmit={move}><h3>Перемещение / выдача</h3><select name="operation"><option value="transfer">Склад → склад</option><option value="issue">Выдача представителю</option></select><select name="source_location_id" required><option value="">Источник</option>{warehouses.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select><select name="destination_location_id" required><option value="">Получатель</option>{locations.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select><select name="product_id" required><option value="">Товар</option>{products.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select><input name="quantity" type="number" min="0.001" step="0.001" required placeholder="Количество" /><input name="comment" placeholder="Комментарий" /><button>Провести</button></form>
+      </div></section>
     </>
-  );
-}
-
-function Warehouses({ data }: { data: DashboardData }) {
-  return (
-    <Panel title="Остатки по складам" subtitle="Количество и две действующие цены для каждой позиции">
-      <div className="table-wrap">
-        <table>
-          <thead><tr><th>Склад</th><th>Артикул</th><th>Товар</th><th>Остаток</th><th>Розница</th><th>Опт</th></tr></thead>
-          <tbody>
-            {data.warehouseBalances.map((row) => (
-              <tr key={`${row.warehouse_id}:${row.product_id}`}>
-                <td><strong>{row.warehouse_name}</strong><small>{row.warehouse_code}</small></td>
-                <td>{row.sku}</td><td>{row.product_name}</td>
-                <td>{number.format(Number(row.quantity))} {row.unit}</td>
-                <td>{money.format(Number(row.retail_price))}</td>
-                <td>{money.format(Number(row.wholesale_price))}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {data.warehouseBalances.length === 0 && <Empty text="На складах нет текущих остатков" />}
-    </Panel>
-  );
-}
-
-function Catalog({ data }: { data: DashboardData }) {
-  return (
-    <Panel title="Каталог товаров" subtitle="Актуальные розничные и оптовые цены">
-      <div className="table-wrap">
-        <table>
-          <thead><tr><th>Артикул</th><th>Наименование</th><th>Ед.</th><th>Розница</th><th>Опт</th></tr></thead>
-          <tbody>
-            {data.products.map((product) => (
-              <tr key={product.id}>
-                <td>{product.sku}</td><td><strong>{product.name}</strong></td><td>{product.unit}</td>
-                <td>{money.format(Number(product.retail_price))}</td><td>{money.format(Number(product.wholesale_price))}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {data.products.length === 0 && <Empty text="Каталог пуст" />}
-    </Panel>
-  );
-}
-
-function Representatives({ data }: { data: DashboardData }) {
-  return (
-    <Panel title="Торговые представители" subtitle="Товар на руках и текущая задолженность">
-      <div className="table-wrap">
-        <table>
-          <thead><tr><th>Код</th><th>Представитель</th><th>Позиций</th><th>Количество</th><th>Задолженность</th><th>Учетная запись</th></tr></thead>
-          <tbody>
-            {data.representatives.map((representative) => {
-              const rows = data.representativeBalances.filter(
-                (row) => row.representative_id === representative.id,
-              );
-              const quantity = rows.reduce((sum, row) => sum + Number(row.quantity), 0);
-              const debt = data.debts[representative.id] ?? 0;
-              return (
-                <tr key={representative.id}>
-                  <td>{representative.code}</td><td><strong>{representative.name}</strong></td>
-                  <td>{rows.length}</td><td>{number.format(quantity)}</td>
-                  <td className={debt > 0 ? "danger-text" : ""}>{money.format(debt)}</td>
-                  <td>{representative.user_id ? <span className="status ok">привязана</span> : <span className="status muted">не привязана</span>}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      {data.representatives.length === 0 && <Empty text="Представителей нет" />}
-    </Panel>
-  );
-}
-
-function Kpi({ label, value, hint, danger = false }: { label: string; value: string; hint: string; danger?: boolean }) {
-  return <article className="kpi"><span>{label}</span><strong className={danger ? "danger-text" : ""}>{value}</strong><small>{hint}</small></article>;
-}
-
-function Panel({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
-  return <section className="panel"><div className="panel-heading"><div><h2>{title}</h2><p>{subtitle}</p></div></div>{children}</section>;
-}
-
-function Empty({ text }: { text: string }) {
-  return <div className="empty">{text}</div>;
-}
-
-function NavButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
-  return <button className={active ? "active" : ""} onClick={onClick}>{children}</button>;
-}
-
-function viewTitle(view: View): string {
-  return {
-    overview: "Обзор",
-    warehouses: "Склады и остатки",
-    catalog: "Каталог товаров",
-    representatives: "Торговые представители",
-    documents: "Журнал документов",
-    money: "Денежный журнал",
-    reports: "Отчёты руководителя",
-    users: "Пользователи и доступ",
-    admin: "Администрирование",
-  }[view];
+  )
 }

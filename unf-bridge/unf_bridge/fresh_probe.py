@@ -1,0 +1,282 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+from .odata import FreshODataClient, ODataEntitySet, ODataField, ODataNavigation
+from .tenant_config import TenantMapping
+
+
+DEFAULT_HINTS = (
+    "Номенклат",
+    "ВидЦен",
+    "Цен",
+    "Склад",
+    "Перемещ",
+    "Расход",
+    "Касс",
+    "Оприход",
+    "Списан",
+    "Организац",
+    "Контрагент",
+)
+
+SNAPSHOT_SCHEMA_VERSION = "ceh-unf-metadata-v1"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Read-only probe стандартного OData интерфейса 1С:Фреш"
+    )
+    parser.add_argument(
+        "--url",
+        default=os.getenv("UNF_FRESH_URL"),
+        help="URL приложения 1С:Фреш, например https://1cfresh.com/a/.../...",
+    )
+    parser.add_argument(
+        "--mapping",
+        type=Path,
+        help="Несекретный JSON mapping; при наличии будет сверён с $metadata tenant",
+    )
+    parser.add_argument(
+        "--contains",
+        action="append",
+        default=[],
+        help="Показать EntitySet, имя которых содержит строку; можно указывать несколько раз",
+    )
+    parser.add_argument("--all", action="store_true", help="Показать все EntitySet")
+    parser.add_argument(
+        "--details",
+        action="store_true",
+        help="Показать поля, EDM-типы, nullable и связанные EntitySet/табличные части",
+    )
+    parser.add_argument(
+        "--snapshot",
+        type=Path,
+        help="Сохранить полный санитизированный JSON snapshot $metadata без credentials",
+    )
+    parser.add_argument(
+        "--allow-http",
+        action="store_true",
+        help="Разрешить HTTP только для локального тестового стенда",
+    )
+    return parser.parse_args()
+
+
+def related_entity_sets(item: ODataEntitySet, entity_sets: list[ODataEntitySet]) -> list[ODataEntitySet]:
+    prefix = f"{item.name}_"
+    return [candidate for candidate in entity_sets if candidate.name.startswith(prefix)]
+
+
+def entity_details_lines(item: ODataEntitySet, entity_sets: list[ODataEntitySet]) -> list[str]:
+    lines: list[str] = []
+    if item.fields:
+        lines.append("  Поля:")
+        for field in item.fields:
+            marker = "nullable" if field.nullable else "required"
+            lines.append(f"    {field.name}: {field.edm_type} [{marker}]")
+    elif item.properties:
+        lines.append("  Поля: " + ", ".join(item.properties))
+
+    if item.navigation:
+        lines.append("  NavigationProperty:")
+        for navigation in item.navigation:
+            lines.append(f"    {navigation.name}: {navigation.target_type}")
+
+    related = related_entity_sets(item, entity_sets)
+    if related:
+        lines.append("  Связанные EntitySet / возможные табличные части:")
+        for candidate in related:
+            lines.append(f"    {candidate.name} -> {candidate.entity_type}")
+            for field in candidate.fields:
+                marker = "nullable" if field.nullable else "required"
+                lines.append(f"      {field.name}: {field.edm_type} [{marker}]")
+    return lines
+
+
+def metadata_snapshot(application_url: str, entity_sets: list[ODataEntitySet]) -> dict[str, Any]:
+    """Возвращает переносимый read-only snapshot структуры OData без учетных данных."""
+    normalized_url = application_url.rstrip("/")
+    return {
+        "schema_version": SNAPSHOT_SCHEMA_VERSION,
+        "application_url": normalized_url,
+        "odata_base": f"{normalized_url}/odata/standard.odata",
+        "entity_set_count": len(entity_sets),
+        "entity_sets": [
+            {
+                "name": item.name,
+                "entity_type": item.entity_type,
+                "fields": [
+                    {
+                        "name": field.name,
+                        "edm_type": field.edm_type,
+                        "nullable": field.nullable,
+                    }
+                    for field in item.fields
+                ],
+                "navigation": [
+                    {
+                        "name": navigation.name,
+                        "target_type": navigation.target_type,
+                    }
+                    for navigation in item.navigation
+                ],
+                "related_entity_sets": [
+                    candidate.name for candidate in related_entity_sets(item, entity_sets)
+                ],
+            }
+            for item in entity_sets
+        ],
+    }
+
+
+def write_metadata_snapshot(
+    path: Path,
+    application_url: str,
+    entity_sets: list[ODataEntitySet],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            metadata_snapshot(application_url, entity_sets),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def load_metadata_snapshot(path: Path) -> tuple[str, list[ODataEntitySet]]:
+    """Загружает snapshot обратно в модель `$metadata` для offline-валидации mapping."""
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("Metadata snapshot должен быть JSON-объектом")
+    if raw.get("schema_version") != SNAPSHOT_SCHEMA_VERSION:
+        raise ValueError(
+            f"Неподдерживаемая версия metadata snapshot: {raw.get('schema_version')!r}"
+        )
+
+    application_url = str(raw.get("application_url", "")).strip().rstrip("/")
+    if not application_url:
+        raise ValueError("Metadata snapshot не содержит application_url")
+
+    raw_sets = raw.get("entity_sets")
+    if not isinstance(raw_sets, list):
+        raise ValueError("Metadata snapshot не содержит список entity_sets")
+
+    entity_sets: list[ODataEntitySet] = []
+    for index, raw_item in enumerate(raw_sets):
+        if not isinstance(raw_item, dict):
+            raise ValueError(f"entity_sets[{index}] должен быть JSON-объектом")
+        name = str(raw_item.get("name", "")).strip()
+        entity_type = str(raw_item.get("entity_type", "")).strip()
+        if not name or not entity_type:
+            raise ValueError(f"entity_sets[{index}] не содержит name/entity_type")
+
+        raw_fields = raw_item.get("fields", [])
+        raw_navigation = raw_item.get("navigation", [])
+        if not isinstance(raw_fields, list) or not isinstance(raw_navigation, list):
+            raise ValueError(f"entity_sets[{index}] содержит некорректные fields/navigation")
+
+        fields: list[ODataField] = []
+        for field_index, raw_field in enumerate(raw_fields):
+            if not isinstance(raw_field, dict):
+                raise ValueError(
+                    f"entity_sets[{index}].fields[{field_index}] должен быть JSON-объектом"
+                )
+            field_name = str(raw_field.get("name", "")).strip()
+            edm_type = str(raw_field.get("edm_type", "")).strip()
+            nullable = raw_field.get("nullable")
+            if not field_name or not edm_type or not isinstance(nullable, bool):
+                raise ValueError(
+                    f"entity_sets[{index}].fields[{field_index}] содержит некорректные данные"
+                )
+            fields.append(ODataField(field_name, edm_type, nullable))
+
+        navigation: list[ODataNavigation] = []
+        for navigation_index, raw_nav in enumerate(raw_navigation):
+            if not isinstance(raw_nav, dict):
+                raise ValueError(
+                    f"entity_sets[{index}].navigation[{navigation_index}] должен быть JSON-объектом"
+                )
+            nav_name = str(raw_nav.get("name", "")).strip()
+            target_type = str(raw_nav.get("target_type", "")).strip()
+            if not nav_name or not target_type:
+                raise ValueError(
+                    f"entity_sets[{index}].navigation[{navigation_index}] содержит некорректные данные"
+                )
+            navigation.append(ODataNavigation(nav_name, target_type))
+
+        entity_sets.append(
+            ODataEntitySet(
+                name=name,
+                entity_type=entity_type,
+                properties=tuple(field.name for field in fields),
+                fields=tuple(fields),
+                navigation=tuple(navigation),
+            )
+        )
+
+    return application_url, sorted(entity_sets, key=lambda item: item.name.casefold())
+
+
+def main() -> None:
+    args = parse_args()
+    username = os.getenv("UNF_FRESH_LOGIN")
+    password = os.getenv("UNF_FRESH_PASSWORD")
+    if not args.url:
+        raise SystemExit("Не задан --url или UNF_FRESH_URL")
+    if not username or not password:
+        raise SystemExit("Задайте UNF_FRESH_LOGIN и UNF_FRESH_PASSWORD через secret storage")
+
+    mapping = TenantMapping.load(args.mapping) if args.mapping else None
+    if mapping and mapping.application_url.rstrip("/") != args.url.rstrip("/"):
+        raise SystemExit("application_url в mapping не совпадает с URL probe")
+
+    with FreshODataClient(
+        args.url,
+        username,
+        password,
+        allow_http=args.allow_http,
+    ) as client:
+        entity_sets = client.entity_sets()
+
+    if mapping:
+        mapping.validate_against_metadata(entity_sets)
+        print(f"Mapping проверен: {args.mapping}")
+
+    if args.snapshot:
+        write_metadata_snapshot(args.snapshot, args.url, entity_sets)
+        print(f"Metadata snapshot сохранен: {args.snapshot}")
+        print("Snapshot не содержит логин, пароль или Authorization headers.")
+
+    filters = tuple(args.contains) if args.contains else DEFAULT_HINTS
+    if args.all:
+        selected = entity_sets
+    else:
+        selected = [
+            item
+            for item in entity_sets
+            if any(fragment.casefold() in item.name.casefold() for fragment in filters)
+        ]
+
+    print(f"OData доступен: {len(entity_sets)} EntitySet опубликовано")
+    print(f"OData base: {args.url.rstrip('/')}/odata/standard.odata")
+    print("Сервисные учетные данные в вывод не включаются.")
+    if not selected:
+        print("Подходящие EntitySet по фильтру не найдены. Используйте --all для полного списка.")
+        return
+    for item in selected:
+        print(f"{item.name} -> {item.entity_type}")
+        if args.details:
+            for line in entity_details_lines(item, entity_sets):
+                print(line)
+
+
+if __name__ == "__main__":
+    main()

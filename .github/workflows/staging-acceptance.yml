@@ -1,0 +1,167 @@
+name: Staging-приемка
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: HTTPS origin staging, например https://staging-sklad.example.ru
+        required: true
+        type: string
+      location_id:
+        description: UUID виртуального склада тестового представителя
+        required: true
+        type: string
+      product_id:
+        description: UUID товара с достаточным тестовым остатком
+        required: true
+        type: string
+      requests:
+        description: Количество запросов load-test
+        required: true
+        default: "20"
+        type: string
+      concurrency:
+        description: Параллельность load-test
+        required: true
+        default: "5"
+        type: string
+      quantity:
+        description: Количество товара на одну тестовую продажу
+        required: true
+        default: "1"
+        type: string
+      min_success_rate:
+        description: Минимальный success rate, %, для execute load-test
+        required: true
+        default: "100"
+        type: string
+      max_p95_ms:
+        description: Максимальный p95, мс; 0 = не проверять
+        required: true
+        default: "0"
+        type: string
+      min_throughput_rps:
+        description: Минимальный throughput, req/s; 0 = не проверять
+        required: true
+        default: "0"
+        type: string
+      require_unf_ready:
+        description: Падать, если в outbox УНФ есть документы без сопоставлений
+        required: true
+        default: false
+        type: boolean
+      execute_sales:
+        description: Реально создать тестовые продажи после dry-run
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    name: HTTPS, WSS, представитель, УНФ Cloud и load-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+      - name: Установить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Установить зависимости
+        run: pip install -e './backend[dev]'
+      - name: Проверить входные параметры и secrets
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+          REP_LOGIN: ${{ secrets.CEH_STAGING_REP_LOGIN }}
+          REP_PASSWORD: ${{ secrets.CEH_STAGING_REP_PASSWORD }}
+        run: |
+          case "$BASE_URL" in https://*) ;; *) echo "base_url должен использовать HTTPS"; exit 2 ;; esac
+          test -n "$REP_LOGIN" || { echo "Не задан CEH_STAGING_REP_LOGIN"; exit 2; }
+          test -n "$REP_PASSWORD" || { echo "Не задан CEH_STAGING_REP_PASSWORD"; exit 2; }
+      - name: Выполнить release preflight
+        env:
+          CEH_STAGING_1C_KEY: ${{ secrets.CEH_STAGING_1C_KEY }}
+          REQUIRE_UNF_READY: ${{ inputs.require_unf_ready }}
+        run: |
+          args=(
+            --base-url "${{ inputs.base_url }}"
+            --expected-schema-revision "20260904_09"
+            --output "$RUNNER_TEMP/staging-release-preflight.json"
+          )
+          if [ "$REQUIRE_UNF_READY" = "true" ]; then
+            args+=(--require-unf-ready)
+          fi
+          python scripts/release_preflight.py "${args[@]}"
+      - name: Сохранить release preflight
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-release-preflight
+          path: ${{ runner.temp }}/staging-release-preflight.json
+          if-no-files-found: ignore
+      - name: Выполнить read-only staging smoke
+        env:
+          CEH_STAGING_REP_LOGIN: ${{ secrets.CEH_STAGING_REP_LOGIN }}
+          CEH_STAGING_REP_PASSWORD: ${{ secrets.CEH_STAGING_REP_PASSWORD }}
+          CEH_STAGING_1C_KEY: ${{ secrets.CEH_STAGING_1C_KEY }}
+          REQUIRE_UNF_READY: ${{ inputs.require_unf_ready }}
+        run: |
+          args=(
+            --base-url "${{ inputs.base_url }}"
+            --expected-location-id "${{ inputs.location_id }}"
+          )
+          if [ "$REQUIRE_UNF_READY" = "true" ]; then
+            args+=(--require-unf-ready)
+          fi
+          python scripts/staging_smoke.py "${args[@]}"
+      - name: Выполнить dry-run нагрузочного сценария
+        env:
+          CEH_LOAD_PASSWORD: ${{ secrets.CEH_STAGING_REP_PASSWORD }}
+          CEH_STAGING_REP_LOGIN: ${{ secrets.CEH_STAGING_REP_LOGIN }}
+        run: >-
+          python scripts/load_test.py
+          --base-url "${{ inputs.base_url }}"
+          --login "$CEH_STAGING_REP_LOGIN"
+          --location-id "${{ inputs.location_id }}"
+          --product-id "${{ inputs.product_id }}"
+          --requests "${{ inputs.requests }}"
+          --concurrency "${{ inputs.concurrency }}"
+          --quantity "${{ inputs.quantity }}"
+          --min-success-rate "${{ inputs.min_success_rate }}"
+          --max-p95-ms "${{ inputs.max_p95_ms }}"
+          --min-throughput-rps "${{ inputs.min_throughput_rps }}"
+          --output "$RUNNER_TEMP/load-test-dry-run.json"
+      - name: Выполнить реальные тестовые продажи
+        if: ${{ inputs.execute_sales }}
+        env:
+          CEH_LOAD_PASSWORD: ${{ secrets.CEH_STAGING_REP_PASSWORD }}
+          CEH_STAGING_REP_LOGIN: ${{ secrets.CEH_STAGING_REP_LOGIN }}
+          CEH_LOAD_TEST_CONFIRM: I_UNDERSTAND_THIS_CREATES_REAL_SALES
+        run: >-
+          python scripts/load_test.py
+          --base-url "${{ inputs.base_url }}"
+          --login "$CEH_STAGING_REP_LOGIN"
+          --location-id "${{ inputs.location_id }}"
+          --product-id "${{ inputs.product_id }}"
+          --requests "${{ inputs.requests }}"
+          --concurrency "${{ inputs.concurrency }}"
+          --quantity "${{ inputs.quantity }}"
+          --min-success-rate "${{ inputs.min_success_rate }}"
+          --max-p95-ms "${{ inputs.max_p95_ms }}"
+          --min-throughput-rps "${{ inputs.min_throughput_rps }}"
+          --output "$RUNNER_TEMP/load-test-execute.json"
+          --execute
+      - name: Сохранить результаты load-test
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-load-test-results
+          path: |
+            ${{ runner.temp }}/load-test-dry-run.json
+            ${{ runner.temp }}/load-test-execute.json
+          if-no-files-found: warn
+          retention-days: 14

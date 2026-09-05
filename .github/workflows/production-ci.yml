@@ -32,10 +32,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Получить код
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Проверить эксплуатационные скрипты
-        run: bash -n ops/backup-postgres.sh ops/restore-postgres.sh
+        run: |
+          bash -n ops/backup-postgres.sh ops/restore-postgres.sh
+          python -m py_compile ops/smoke-production.py
 
       - name: Подготовить тестовые секреты
         run: |
@@ -64,6 +66,43 @@ jobs:
 
       - name: Собрать production веб-панель
         run: docker build -t ceh-sklad-web:ci ./admin-web
+
+      - name: Поднять одноразовый production-контур
+        env:
+          CEH_DB_PASSWORD_FILE: /tmp/ceh-secrets/db_password
+          CEH_JWT_SECRET_FILE: /tmp/ceh-secrets/jwt_secret
+          CEH_INTEGRATION_API_KEY_FILE: /tmp/ceh-secrets/integration_api_key
+          CEH_REDIS_PASSWORD_FILE: /tmp/ceh-secrets/redis_password
+          CEH_TLS_FULLCHAIN_FILE: /tmp/ceh-secrets/fullchain.pem
+          CEH_TLS_PRIVKEY_FILE: /tmp/ceh-secrets/privkey.pem
+          CEH_HTTP_PORT: "18080"
+          CEH_HTTPS_PORT: "18443"
+          CEH_PROMETHEUS_PORT: "19090"
+        run: |
+          docker compose -p ceh-smoke-ci -f compose.production.yml \
+            up -d --build --wait db redis backend web
+
+      - name: Проверить полный складской сценарий через HTTPS
+        env:
+          CEH_SMOKE_ALLOW_MUTATION: "YES"
+          CEH_SMOKE_BASE_URL: https://127.0.0.1:18443
+          CEH_SMOKE_INSECURE_TLS: "1"
+          CEH_SMOKE_INTEGRATION_KEY: ci-integration-secret
+        run: python ops/smoke-production.py
+
+      - name: Удалить одноразовый production-контур
+        if: always()
+        env:
+          CEH_DB_PASSWORD_FILE: /tmp/ceh-secrets/db_password
+          CEH_JWT_SECRET_FILE: /tmp/ceh-secrets/jwt_secret
+          CEH_INTEGRATION_API_KEY_FILE: /tmp/ceh-secrets/integration_api_key
+          CEH_REDIS_PASSWORD_FILE: /tmp/ceh-secrets/redis_password
+          CEH_TLS_FULLCHAIN_FILE: /tmp/ceh-secrets/fullchain.pem
+          CEH_TLS_PRIVKEY_FILE: /tmp/ceh-secrets/privkey.pem
+          CEH_HTTP_PORT: "18080"
+          CEH_HTTPS_PORT: "18443"
+          CEH_PROMETHEUS_PORT: "19090"
+        run: docker compose -p ceh-smoke-ci -f compose.production.yml down -v --remove-orphans
 
       - name: Подготовить изолированную БД для проверки backup/restore
         env:

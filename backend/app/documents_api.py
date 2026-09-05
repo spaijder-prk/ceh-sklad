@@ -17,6 +17,7 @@ from .realtime import stock_updates
 from .realtime_api import router as realtime_router
 from .reports_api import router as reports_router
 from .security import require_roles
+from .users_api import router as users_router
 
 
 router = APIRouter(tags=["Документы"])
@@ -102,3 +103,4 @@ router.include_router(reports_router)
 router.include_router(money_router)
 router.include_router(integration_router)
 router.include_router(realtime_router)
+router.include_router(users_router)

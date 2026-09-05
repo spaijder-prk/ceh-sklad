@@ -11,7 +11,7 @@ from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .db import get_session
+from .db import SessionLocal, get_session
 from .models import MoneyPosting, StockDocument, User, UserRole
 
 password_hash = PasswordHash.recommended()
@@ -30,9 +30,15 @@ def verify_password(password: str, encoded_hash: str) -> bool:
     return password_hash.verify(password, encoded_hash)
 
 
+def user_auth_version(user: User) -> int:
+    return int(user.auth_version or 1)
+
+
 def authenticate_user(session: Session, email: str, password: str) -> User | None:
     user = session.scalar(select(User).where(User.email == normalize_email(email)))
-    if user is None or not verify_password(password, user.password_hash):
+    if user is None or user.is_active is False:
+        return None
+    if not verify_password(password, user.password_hash):
         return None
     return user
 
@@ -42,16 +48,35 @@ def create_access_token(user: User) -> str:
     payload = {
         "sub": str(user.id),
         "role": user.role.value,
+        "ver": user_auth_version(user),
         "exp": expires_at,
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
-def decode_access_token(token: str) -> UUID:
+def decode_access_claims(token: str) -> tuple[UUID, int]:
     payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
     if payload.get("token_type") == "realtime_ws":
         raise InvalidTokenError("WebSocket-ticket нельзя использовать как access token")
-    return UUID(payload["sub"])
+    user_id = UUID(payload["sub"])
+    auth_version = int(payload.get("ver", 1))
+    if auth_version < 1:
+        raise InvalidTokenError("Некорректная версия авторизации")
+    return user_id, auth_version
+
+
+def validate_user_session(user: User | None, auth_version: int) -> User:
+    if user is None or user.is_active is False or user_auth_version(user) != auth_version:
+        raise InvalidTokenError("Сессия пользователя отозвана")
+    return user
+
+
+def decode_access_token(token: str) -> UUID:
+    """Проверяет access token для WebSocket и других вызовов без FastAPI dependency."""
+    user_id, auth_version = decode_access_claims(token)
+    with SessionLocal() as session:
+        validate_user_session(session.get(User, user_id), auth_version)
+    return user_id
 
 
 def get_current_user(
@@ -60,17 +85,15 @@ def get_current_user(
 ) -> User:
     credentials_error = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Недействительный или просроченный токен",
+        detail="Недействительный, просроченный или отозванный токен",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        user_id = decode_access_token(token)
+        user_id, auth_version = decode_access_claims(token)
+        user = validate_user_session(session.get(User, user_id), auth_version)
     except (InvalidTokenError, KeyError, TypeError, ValueError) as exc:
         raise credentials_error from exc
 
-    user = session.get(User, user_id)
-    if user is None:
-        raise credentials_error
     session.info["current_user_id"] = user.id
     return user
 

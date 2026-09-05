@@ -30,6 +30,9 @@ interface StockDocument {
   comment: string | null;
   created_by_user_id: string | null;
   created_by_name: string | null;
+  cancelled_by_user_id: string | null;
+  cancelled_by_name: string | null;
+  cancelled_at: string | null;
   created_at: string;
   posted_at: string;
   updated_at: string;
@@ -108,7 +111,7 @@ export function DocumentsView({
       <div className="panel-heading document-heading">
         <div>
           <h2>Журнал документов</h2>
-          <p>Последние 100 товарных документов. Сторно не удаляет исходные проводки.</p>
+          <p>Последние 100 товарных документов. Создание и сторно сохраняются в аудите.</p>
         </div>
         <button className="secondary-button" disabled={loading} onClick={() => void load()}>
           {loading ? "Загрузка…" : "Обновить журнал"}
@@ -142,6 +145,11 @@ export function DocumentsView({
                   <span className={`status ${document.status === "posted" ? "ok" : "cancelled"}`}>
                     {document.status === "posted" ? "проведен" : "сторнирован"}
                   </span>
+                  {document.cancelled_at && (
+                    <small>
+                      {formatDate(document.cancelled_at)} · {document.cancelled_by_name || "автор не зафиксирован"}
+                    </small>
+                  )}
                 </td>
                 <td>
                   <strong>{document.created_by_name || integrationAuthor(document.external_id)}</strong>

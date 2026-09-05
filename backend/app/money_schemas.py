@@ -17,8 +17,13 @@ class MoneyPostingRead(BaseModel):
     amount: Decimal
     comment: str | None = None
     external_id: str | None = None
+    created_by_user_id: UUID | None = None
+    created_by_name: str | None = None
     created_at: datetime
     reversed: bool = False
+    reversed_by_user_id: UUID | None = None
+    reversed_by_name: str | None = None
+    reversed_at: datetime | None = None
 
 
 class PaymentReverseResult(BaseModel):

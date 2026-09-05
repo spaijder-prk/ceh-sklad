@@ -5,7 +5,7 @@ from uuid import UUID
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
-from .models import MoneyOperation, MoneyPosting, Representative
+from .models import MoneyOperation, MoneyPosting, Representative, User
 from .money_schemas import MoneyPostingRead, PaymentReverseResult
 from .services import ConflictError, NotFoundError
 
@@ -43,29 +43,51 @@ def money_journal(
         statement = statement.order_by(MoneyPosting.created_at.desc(), MoneyPosting.id.desc())
 
     rows = session.execute(statement.limit(limit)).all()
-    reversal_ids = set(
-        session.scalars(
-            select(MoneyPosting.external_id).where(
-                MoneyPosting.external_id.like(f"{REVERSAL_PREFIX}%")
-            )
-        ).all()
-    )
-    return [
-        MoneyPostingRead(
-            id=posting.id,
-            representative_id=representative.id,
-            representative_code=representative.code,
-            representative_name=representative.name,
-            document_id=posting.document_id,
-            operation=posting.operation,
-            amount=posting.amount,
-            comment=posting.comment,
-            external_id=posting.external_id,
-            created_at=posting.created_at,
-            reversed=f"{REVERSAL_PREFIX}{posting.id}" in reversal_ids,
+    reversal_rows = session.scalars(
+        select(MoneyPosting).where(MoneyPosting.external_id.like(f"{REVERSAL_PREFIX}%"))
+    ).all()
+    reversals = {
+        posting.external_id.removeprefix(REVERSAL_PREFIX): posting
+        for posting in reversal_rows
+        if posting.external_id
+    }
+
+    result: list[MoneyPostingRead] = []
+    for posting, representative in rows:
+        creator = (
+            session.get(User, posting.created_by_user_id)
+            if posting.created_by_user_id is not None
+            else None
         )
-        for posting, representative in rows
-    ]
+        reversal = reversals.get(str(posting.id))
+        reversal_creator = (
+            session.get(User, reversal.created_by_user_id)
+            if reversal is not None and reversal.created_by_user_id is not None
+            else None
+        )
+        result.append(
+            MoneyPostingRead(
+                id=posting.id,
+                representative_id=representative.id,
+                representative_code=representative.code,
+                representative_name=representative.name,
+                document_id=posting.document_id,
+                operation=posting.operation,
+                amount=posting.amount,
+                comment=posting.comment,
+                external_id=posting.external_id,
+                created_by_user_id=posting.created_by_user_id,
+                created_by_name=creator.full_name if creator is not None else None,
+                created_at=posting.created_at,
+                reversed=reversal is not None,
+                reversed_by_user_id=reversal.created_by_user_id if reversal is not None else None,
+                reversed_by_name=(
+                    reversal_creator.full_name if reversal_creator is not None else None
+                ),
+                reversed_at=reversal.created_at if reversal is not None else None,
+            )
+        )
+    return result
 
 
 def reverse_payment(session: Session, posting_id: UUID) -> PaymentReverseResult:

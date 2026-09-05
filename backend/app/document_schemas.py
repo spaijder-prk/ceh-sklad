@@ -27,6 +27,9 @@ class DocumentRead(BaseModel):
     comment: str | None = None
     created_by_user_id: UUID | None = None
     created_by_name: str | None = None
+    cancelled_by_user_id: UUID | None = None
+    cancelled_by_name: str | None = None
+    cancelled_at: datetime | None = None
     created_at: datetime
     posted_at: datetime
     updated_at: datetime

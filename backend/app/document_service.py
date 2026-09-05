@@ -98,6 +98,11 @@ def _document_to_read(session: Session, document: StockDocument) -> DocumentRead
         if document.created_by_user_id is not None
         else None
     )
+    canceller = (
+        session.get(User, document.cancelled_by_user_id)
+        if document.cancelled_by_user_id is not None
+        else None
+    )
     return DocumentRead(
         id=document.id,
         document_type=document.document_type,
@@ -106,6 +111,9 @@ def _document_to_read(session: Session, document: StockDocument) -> DocumentRead
         comment=document.comment,
         created_by_user_id=document.created_by_user_id,
         created_by_name=creator.full_name if creator is not None else None,
+        cancelled_by_user_id=document.cancelled_by_user_id,
+        cancelled_by_name=canceller.full_name if canceller is not None else None,
+        cancelled_at=document.cancelled_at,
         created_at=document.created_at,
         posted_at=document.posted_at,
         updated_at=document.updated_at,
@@ -147,7 +155,6 @@ def cancel_document(session: Session, document_id: UUID) -> DocumentCancelResult
         .order_by(StockPosting.id)
     ).all()
 
-    # До изменения регистра проверяем все будущие списания, чтобы сторно было атомарным.
     warehouse_required: dict[UUID, dict[UUID, Decimal]] = defaultdict(
         lambda: defaultdict(lambda: Decimal("0"))
     )
@@ -212,8 +219,11 @@ def cancel_document(session: Session, document_id: UUID) -> DocumentCancelResult
         )
         debt_changed = True
 
+    cancelled_at = utcnow()
     document.status = DocumentStatus.CANCELLED
-    document.updated_at = utcnow()
+    document.cancelled_by_user_id = session.info.get("current_user_id")
+    document.cancelled_at = cancelled_at
+    document.updated_at = cancelled_at
     session.commit()
     return DocumentCancelResult(
         document_id=document.id,

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .db import get_session
-from .models import StockDocument, User, UserRole
+from .models import MoneyPosting, StockDocument, User, UserRole
 
 password_hash = PasswordHash.recommended()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.api_prefix}/auth/token")
@@ -87,10 +87,12 @@ def require_roles(*roles: UserRole):
 
 
 @event.listens_for(Session, "before_flush")
-def assign_document_creator(session: Session, _flush_context, _instances) -> None:
+def assign_operation_creator(session: Session, _flush_context, _instances) -> None:
     user_id = session.info.get("current_user_id")
     if user_id is None:
         return
     for instance in session.new:
         if isinstance(instance, StockDocument) and instance.created_by_user_id is None:
+            instance.created_by_user_id = user_id
+        elif isinstance(instance, MoneyPosting) and instance.created_by_user_id is None:
             instance.created_by_user_id = user_id

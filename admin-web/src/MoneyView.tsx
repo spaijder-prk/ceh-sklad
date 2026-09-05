@@ -14,8 +14,13 @@ interface MoneyPosting {
   amount: DecimalValue;
   comment: string | null;
   external_id: string | null;
+  created_by_user_id: string | null;
+  created_by_name: string | null;
   created_at: string;
   reversed: boolean;
+  reversed_by_user_id: string | null;
+  reversed_by_name: string | null;
+  reversed_at: string | null;
 }
 
 const operationLabels: Record<MoneyOperation, string> = {
@@ -104,7 +109,7 @@ export function MoneyView({
       <div className="panel-heading money-heading">
         <div>
           <h2>Денежный журнал</h2>
-          <p>Последние 100 движений задолженности. Исходные записи не удаляются.</p>
+          <p>Последние 100 движений задолженности с аудитом создания и сторно.</p>
         </div>
         <button className="secondary-button" disabled={loading} onClick={() => void load()}>
           {loading ? "Загрузка…" : "Обновить журнал"}
@@ -122,7 +127,7 @@ export function MoneyView({
 
       <div className="table-wrap">
         <table className="money-table">
-          <thead><tr><th>Дата</th><th>Представитель</th><th>Операция</th><th>Изменение долга</th><th>Статус</th><th>Комментарий</th>{isAdmin && <th>Действие</th>}</tr></thead>
+          <thead><tr><th>Дата</th><th>Представитель</th><th>Операция</th><th>Изменение долга</th><th>Автор</th><th>Статус</th><th>Комментарий</th>{isAdmin && <th>Действие</th>}</tr></thead>
           <tbody>
             {filtered.map((row) => {
               const amount = Number(row.amount);
@@ -132,7 +137,11 @@ export function MoneyView({
                   <td><strong>{row.representative_name}</strong><small>{row.representative_code}</small></td>
                   <td>{operationLabels[row.operation]}</td>
                   <td className={amount > 0 ? "danger-text" : amount < 0 ? "positive-text" : ""}><strong>{formatSignedMoney(amount)}</strong></td>
-                  <td>{row.reversed ? <span className="status cancelled">сторнирована</span> : <span className="status ok">учтена</span>}</td>
+                  <td><strong>{row.created_by_name || integrationAuthor(row.external_id)}</strong>{row.created_by_user_id && <small>{row.created_by_user_id.slice(0, 8)}</small>}</td>
+                  <td>
+                    {row.reversed ? <span className="status cancelled">сторнирована</span> : <span className="status ok">учтена</span>}
+                    {row.reversed_at && <small>{formatDate(row.reversed_at)} · {row.reversed_by_name || "автор не зафиксирован"}</small>}
+                  </td>
                   <td className="money-comment">{row.comment || "—"}</td>
                   {isAdmin && <td>{row.operation === "payment" && !row.reversed ? <button className="danger-button" disabled={busyId === row.id} onClick={() => void reverse(row)}>{busyId === row.id ? "Сторно…" : "Сторнировать"}</button> : <span className="muted-text">—</span>}</td>}
                 </tr>
@@ -175,4 +184,8 @@ function formatDate(value: string): string {
 function formatSignedMoney(value: number): string {
   if (value > 0) return `+${money.format(value)}`;
   return money.format(value);
+}
+
+function integrationAuthor(externalId: string | null): string {
+  return externalId?.startsWith("1c:") ? "1С" : "Не зафиксирован";
 }

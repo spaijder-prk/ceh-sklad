@@ -110,6 +110,8 @@ class StockDocument(Base):
     external_id: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True, index=True)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by_user_id: Mapped[UUID | None] = mapped_column(Uuid, ForeignKey("users.id"), nullable=True)
+    cancelled_by_user_id: Mapped[UUID | None] = mapped_column(Uuid, ForeignKey("users.id"), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     posted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -187,6 +189,7 @@ class MoneyPosting(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     external_id: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True, index=True)
+    created_by_user_id: Mapped[UUID | None] = mapped_column(Uuid, ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     @validates("amount")

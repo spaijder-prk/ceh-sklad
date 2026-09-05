@@ -3,6 +3,7 @@ import { AdminTools } from "./AdminTools";
 import { DocumentsView } from "./DocumentsView";
 import { MoneyView } from "./MoneyView";
 import { ReportsView } from "./ReportsView";
+import { UserAccessView } from "./UserAccessView";
 import { useRealtimeUpdates } from "./realtime";
 import {
   ApiError,
@@ -13,7 +14,7 @@ import {
   login,
 } from "./api";
 
-type View = "overview" | "warehouses" | "catalog" | "representatives" | "documents" | "money" | "reports" | "admin";
+type View = "overview" | "warehouses" | "catalog" | "representatives" | "documents" | "money" | "reports" | "users" | "admin";
 
 const money = new Intl.NumberFormat("ru-RU", {
   style: "currency",
@@ -82,7 +83,8 @@ export default function App() {
   }
 
   const isAdmin = data.user.role === "admin";
-  const effectiveView: View = !isAdmin && view === "admin" ? "overview" : view;
+  const adminOnlyView = view === "users" || view === "admin";
+  const effectiveView: View = !isAdmin && adminOnlyView ? "overview" : view;
   const realtimeLabel = realtimeStatus === "online"
     ? "Реальное время"
     : realtimeStatus === "connecting"
@@ -108,7 +110,10 @@ export default function App() {
           <NavButton active={effectiveView === "money"} onClick={() => setView("money")}>Деньги</NavButton>
           <NavButton active={effectiveView === "reports"} onClick={() => setView("reports")}>Отчёты</NavButton>
           {isAdmin && (
-            <NavButton active={effectiveView === "admin"} onClick={() => setView("admin")}>Администрирование</NavButton>
+            <>
+              <NavButton active={effectiveView === "users"} onClick={() => setView("users")}>Пользователи</NavButton>
+              <NavButton active={effectiveView === "admin"} onClick={() => setView("admin")}>Администрирование</NavButton>
+            </>
           )}
         </nav>
         <div className="sidebar-footer">
@@ -142,6 +147,7 @@ export default function App() {
         {effectiveView === "documents" && <DocumentsView isAdmin={isAdmin} onChanged={() => refresh()} />}
         {effectiveView === "money" && <MoneyView isAdmin={isAdmin} onChanged={() => refresh()} />}
         {effectiveView === "reports" && <ReportsView />}
+        {effectiveView === "users" && isAdmin && <UserAccessView currentUserId={data.user.id} />}
         {effectiveView === "admin" && isAdmin && <AdminTools data={data} onChanged={() => refresh()} />}
       </main>
     </div>
@@ -353,6 +359,7 @@ function viewTitle(view: View): string {
     documents: "Журнал документов",
     money: "Денежный журнал",
     reports: "Отчёты руководителя",
+    users: "Пользователи и доступ",
     admin: "Администрирование",
   }[view];
 }

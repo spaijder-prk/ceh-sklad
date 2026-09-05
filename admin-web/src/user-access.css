@@ -1,0 +1,39 @@
+.user-access-table {
+  min-width: 980px;
+}
+
+.password-reset-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 360px;
+}
+
+.password-reset-form input {
+  min-width: 210px;
+  padding: 8px 10px;
+}
+
+.password-reset-form button,
+.user-access-table .secondary-button,
+.user-access-table .danger-button {
+  white-space: nowrap;
+  padding: 8px 11px;
+}
+
+.danger-button {
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  background: #fff;
+  color: #b91c1c;
+  font-weight: 700;
+}
+
+.danger-button:hover {
+  background: #fef2f2;
+}
+
+.danger-button:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}

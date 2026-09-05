@@ -8,6 +8,10 @@ export interface User {
   role: UserRole;
 }
 
+export interface UserAccess extends User {
+  is_active: boolean;
+}
+
 export interface Warehouse {
   id: string;
   code: string;
@@ -167,6 +171,23 @@ export async function loadDashboard(): Promise<DashboardData> {
     representativeBalances,
     debts,
   };
+}
+
+export async function loadUserAccess(): Promise<UserAccess[]> {
+  return request<UserAccess[]>("/api/v1/users/access");
+}
+
+export async function updateUserAccess(
+  userId: string,
+  payload: { isActive?: boolean; newPassword?: string },
+): Promise<UserAccess> {
+  const body: { is_active?: boolean; new_password?: string } = {};
+  if (payload.isActive !== undefined) body.is_active = payload.isActive;
+  if (payload.newPassword !== undefined) body.new_password = payload.newPassword;
+  return request<UserAccess>(`/api/v1/users/${userId}/access`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
 }
 
 export async function createUser(payload: {

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from . import models  # noqa: F401
 from .config import settings
 from .db import Base, SessionLocal, engine, get_session
+from .documents_api import router as documents_router
 from .models import Product, Representative, User, UserRole, Warehouse
 from .realtime import stock_updates
 from .schemas import (
@@ -75,6 +76,7 @@ app = FastAPI(
     description="API складского учета, движения товара и расчетов с торговыми представителями.",
     lifespan=lifespan,
 )
+app.include_router(documents_router, prefix=settings.api_prefix)
 SessionDep = Annotated[Session, Depends(get_session)]
 CurrentUserDep = Annotated[User, Depends(get_current_user)]
 AdminDep = Annotated[User, Depends(require_roles(UserRole.ADMIN))]

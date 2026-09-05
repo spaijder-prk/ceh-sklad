@@ -1,5 +1,6 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { AdminTools } from "./AdminTools";
+import { DocumentsView } from "./DocumentsView";
 import {
   ApiError,
   DashboardData,
@@ -9,7 +10,7 @@ import {
   login,
 } from "./api";
 
-type View = "overview" | "warehouses" | "catalog" | "representatives" | "admin";
+type View = "overview" | "warehouses" | "catalog" | "representatives" | "documents" | "admin";
 
 const money = new Intl.NumberFormat("ru-RU", {
   style: "currency",
@@ -93,6 +94,7 @@ export default function App() {
           <NavButton active={effectiveView === "warehouses"} onClick={() => setView("warehouses")}>Склады</NavButton>
           <NavButton active={effectiveView === "catalog"} onClick={() => setView("catalog")}>Товары</NavButton>
           <NavButton active={effectiveView === "representatives"} onClick={() => setView("representatives")}>Представители</NavButton>
+          <NavButton active={effectiveView === "documents"} onClick={() => setView("documents")}>Документы</NavButton>
           {isAdmin && (
             <NavButton active={effectiveView === "admin"} onClick={() => setView("admin")}>Администрирование</NavButton>
           )}
@@ -125,6 +127,7 @@ export default function App() {
         {effectiveView === "warehouses" && <Warehouses data={data} />}
         {effectiveView === "catalog" && <Catalog data={data} />}
         {effectiveView === "representatives" && <Representatives data={data} />}
+        {effectiveView === "documents" && <DocumentsView isAdmin={isAdmin} onChanged={() => refresh()} />}
         {effectiveView === "admin" && isAdmin && <AdminTools data={data} onChanged={() => refresh()} />}
       </main>
     </div>
@@ -333,6 +336,7 @@ function viewTitle(view: View): string {
     warehouses: "Склады и остатки",
     catalog: "Каталог товаров",
     representatives: "Торговые представители",
+    documents: "Журнал документов",
     admin: "Администрирование",
   }[view];
 }

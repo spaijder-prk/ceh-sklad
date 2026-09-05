@@ -25,9 +25,20 @@ from .services import (
 )
 
 
-def document_journal(session: Session, limit: int = 100) -> list[DocumentRead]:
+def document_journal(
+    session: Session,
+    limit: int = 100,
+    representative_id: UUID | None = None,
+) -> list[DocumentRead]:
+    statement = select(StockDocument)
+    if representative_id is not None:
+        representative_documents = select(StockPosting.document_id).where(
+            StockPosting.representative_id == representative_id
+        )
+        statement = statement.where(StockDocument.id.in_(representative_documents))
+
     documents = session.scalars(
-        select(StockDocument)
+        statement
         .order_by(StockDocument.posted_at.desc(), StockDocument.id.desc())
         .limit(limit)
     ).all()

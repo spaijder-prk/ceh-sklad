@@ -13,6 +13,7 @@ import kotlinx.coroutines.launch
 import okhttp3.WebSocket
 import retrofit2.HttpException
 import ru.ceh.sklad.data.CehRepository
+import ru.ceh.sklad.data.DocumentDto
 import ru.ceh.sklad.data.QuantityLineDto
 import ru.ceh.sklad.data.RepresentativeBalanceDto
 import ru.ceh.sklad.data.RepresentativeDto
@@ -33,6 +34,7 @@ data class AppUiState(
     val warehouseBalances: List<WarehouseBalanceDto> = emptyList(),
     val representativeBalances: List<RepresentativeBalanceDto> = emptyList(),
     val debt: BigDecimal? = null,
+    val documents: List<DocumentDto> = emptyList(),
     val realtimeActive: Boolean = false,
     val operationLoading: Boolean = false,
     val operationMessage: String? = null,
@@ -230,6 +232,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 warehouseBalances = dashboard.warehouseBalances,
                 representativeBalances = dashboard.representativeBalances,
                 debt = dashboard.debt,
+                documents = dashboard.documents,
                 error = null,
             )
         }

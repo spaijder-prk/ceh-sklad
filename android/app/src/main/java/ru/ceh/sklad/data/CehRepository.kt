@@ -58,6 +58,7 @@ class CehRepository(context: Context) {
                 warehouseBalances = warehouseBalances,
                 representativeBalances = emptyList(),
                 debt = null,
+                documents = emptyList(),
             )
         }
 
@@ -65,6 +66,7 @@ class CehRepository(context: Context) {
             ?: error("Учетная запись не привязана к торговому представителю")
         val ownBalances = api.representativeBalances(representative.id)
         val debt = api.representativeDebt(representative.id).debt
+        val documents = api.myDocuments()
 
         return DashboardData(
             user = user,
@@ -73,6 +75,7 @@ class CehRepository(context: Context) {
             warehouseBalances = warehouseBalances,
             representativeBalances = ownBalances,
             debt = debt,
+            documents = documents,
         )
     }
 

@@ -1,13 +1,14 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import get_session
 from .document_schemas import DocumentCancelResult, DocumentRead
 from .document_service import cancel_document, document_journal
-from .models import User, UserRole
+from .models import Representative, User, UserRole
 from .money_api import router as money_router
 from .realtime import stock_updates
 from .reports_api import router as reports_router
@@ -20,6 +21,9 @@ AdminDep = Annotated[User, Depends(require_roles(UserRole.ADMIN))]
 AdminOrManagerDep = Annotated[
     User, Depends(require_roles(UserRole.ADMIN, UserRole.MANAGER))
 ]
+RepresentativeDep = Annotated[
+    User, Depends(require_roles(UserRole.REPRESENTATIVE))
+]
 
 
 @router.get("/documents", response_model=list[DocumentRead])
@@ -29,6 +33,23 @@ def list_documents(
     limit: int = Query(default=100, ge=1, le=200),
 ):
     return document_journal(session, limit)
+
+
+@router.get("/my/documents", response_model=list[DocumentRead])
+def list_my_documents(
+    user: RepresentativeDep,
+    session: SessionDep,
+    limit: int = Query(default=30, ge=1, le=100),
+):
+    representative = session.scalar(
+        select(Representative).where(Representative.user_id == user.id)
+    )
+    if representative is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Учетная запись не привязана к торговому представителю",
+        )
+    return document_journal(session, limit, representative.id)
 
 
 @router.post(

@@ -38,6 +38,11 @@ interface CehApi {
         @Path("representative_id") representativeId: String,
     ): RepresentativeDebtDto
 
+    @GET("api/v1/my/documents")
+    suspend fun myDocuments(
+        @Query("limit") limit: Int = 30,
+    ): List<DocumentDto>
+
     @POST("api/v1/operations/sale")
     suspend fun registerSale(@Body request: SaleRequestDto): OperationResultDto
 

@@ -59,6 +59,30 @@ data class RepresentativeDebtDto(
     val debt: BigDecimal,
 )
 
+data class DocumentLineDto(
+    @SerializedName("product_id") val productId: String,
+    val sku: String,
+    @SerializedName("product_name") val productName: String,
+    @SerializedName("warehouse_id") val warehouseId: String?,
+    @SerializedName("warehouse_name") val warehouseName: String?,
+    @SerializedName("representative_id") val representativeId: String?,
+    @SerializedName("representative_name") val representativeName: String?,
+    val quantity: BigDecimal,
+    @SerializedName("unit_price") val unitPrice: BigDecimal?,
+)
+
+data class DocumentDto(
+    val id: String,
+    @SerializedName("document_type") val documentType: String,
+    val status: String,
+    @SerializedName("external_id") val externalId: String?,
+    val comment: String?,
+    @SerializedName("created_at") val createdAt: String,
+    @SerializedName("posted_at") val postedAt: String,
+    @SerializedName("sale_amount") val saleAmount: BigDecimal,
+    val lines: List<DocumentLineDto>,
+)
+
 data class QuantityLineDto(
     @SerializedName("product_id") val productId: String,
     val quantity: BigDecimal,
@@ -98,4 +122,5 @@ data class DashboardData(
     val warehouseBalances: List<WarehouseBalanceDto>,
     val representativeBalances: List<RepresentativeBalanceDto>,
     val debt: BigDecimal?,
+    val documents: List<DocumentDto>,
 )

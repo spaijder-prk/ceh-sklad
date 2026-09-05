@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import java.math.BigDecimal
+import java.math.RoundingMode
 
 @Composable
 fun CehApp(viewModel: AppViewModel = viewModel()) {
@@ -237,6 +238,24 @@ private fun DashboardScreen(
                         }
                     }
                 }
+                item {
+                    Spacer(Modifier.height(8.dp))
+                    Text("История операций", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "Последние операции по вашему товару",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                if (state.documents.isEmpty()) {
+                    item { EmptyCard("Операций пока нет") }
+                } else {
+                    items(
+                        items = state.documents,
+                        key = { "document:${it.id}" },
+                    ) { document ->
+                        RepresentativeHistoryCard(document)
+                    }
+                }
             }
         }
     }
@@ -275,4 +294,4 @@ private fun EmptyCard(message: String) {
 
 private fun BigDecimal.clean(): String = stripTrailingZeros().toPlainString()
 
-private fun BigDecimal.money(): String = setScale(2).toPlainString()
+private fun BigDecimal.money(): String = setScale(2, RoundingMode.HALF_UP).toPlainString()

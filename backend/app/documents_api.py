@@ -8,6 +8,7 @@ from .db import get_session
 from .document_schemas import DocumentCancelResult, DocumentRead
 from .document_service import cancel_document, document_journal
 from .models import User, UserRole
+from .money_api import router as money_router
 from .realtime import stock_updates
 from .reports_api import router as reports_router
 from .security import require_roles
@@ -56,5 +57,6 @@ def cancel_document_route(
 
 
 # Main подключает этот подмаршрутизатор под общим /api/v1, поэтому здесь
-# собираем рядом и отчетные маршруты, не раздувая основной модуль приложения.
+# собираем рядом управленческие маршруты, не раздувая основной модуль приложения.
 router.include_router(reports_router)
+router.include_router(money_router)

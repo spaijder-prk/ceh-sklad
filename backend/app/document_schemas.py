@@ -25,6 +25,8 @@ class DocumentRead(BaseModel):
     status: DocumentStatus
     external_id: str | None = None
     comment: str | None = None
+    created_by_user_id: UUID | None = None
+    created_by_name: str | None = None
     created_at: datetime
     posted_at: datetime
     updated_at: datetime

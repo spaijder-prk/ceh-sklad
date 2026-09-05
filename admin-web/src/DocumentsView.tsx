@@ -28,8 +28,11 @@ interface StockDocument {
   status: DocumentStatus;
   external_id: string | null;
   comment: string | null;
+  created_by_user_id: string | null;
+  created_by_name: string | null;
   created_at: string;
   posted_at: string;
+  updated_at: string;
   sale_amount: string | number;
   lines: DocumentLine[];
 }
@@ -120,6 +123,7 @@ export function DocumentsView({
               <th>Дата</th>
               <th>Документ</th>
               <th>Статус</th>
+              <th>Автор</th>
               <th>Состав</th>
               <th>Сумма продажи</th>
               <th>Комментарий</th>
@@ -138,6 +142,10 @@ export function DocumentsView({
                   <span className={`status ${document.status === "posted" ? "ok" : "cancelled"}`}>
                     {document.status === "posted" ? "проведен" : "сторнирован"}
                   </span>
+                </td>
+                <td>
+                  <strong>{document.created_by_name || integrationAuthor(document.external_id)}</strong>
+                  {document.created_by_user_id && <small>{document.created_by_user_id.slice(0, 8)}</small>}
                 </td>
                 <td className="document-lines">
                   {document.lines.map((line) => (
@@ -204,4 +212,8 @@ function formatSigned(value: string | number): string {
   const numeric = Number(value);
   const prefix = numeric > 0 ? "+" : "";
   return `${prefix}${number.format(numeric)}`;
+}
+
+function integrationAuthor(externalId: string | null): string {
+  return externalId?.startsWith("1c:") ? "1С" : "Не зафиксирован";
 }

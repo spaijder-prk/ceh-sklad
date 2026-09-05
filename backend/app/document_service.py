@@ -15,6 +15,7 @@ from .models import (
     Representative,
     StockDocument,
     StockPosting,
+    User,
     Warehouse,
     utcnow,
 )
@@ -92,12 +93,19 @@ def _document_to_read(session: Session, document: StockDocument) -> DocumentRead
         )
         or 0
     )
+    creator = (
+        session.get(User, document.created_by_user_id)
+        if document.created_by_user_id is not None
+        else None
+    )
     return DocumentRead(
         id=document.id,
         document_type=document.document_type,
         status=document.status,
         external_id=document.external_id,
         comment=document.comment,
+        created_by_user_id=document.created_by_user_id,
+        created_by_name=creator.full_name if creator is not None else None,
         created_at=document.created_at,
         posted_at=document.posted_at,
         updated_at=document.updated_at,

@@ -7,12 +7,12 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jwt import InvalidTokenError
 from pwdlib import PasswordHash
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from .config import settings
 from .db import get_session
-from .models import User, UserRole
+from .models import StockDocument, User, UserRole
 
 password_hash = PasswordHash.recommended()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.api_prefix}/auth/token")
@@ -49,6 +49,8 @@ def create_access_token(user: User) -> str:
 
 def decode_access_token(token: str) -> UUID:
     payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    if payload.get("token_type") == "realtime_ws":
+        raise InvalidTokenError("WebSocket-ticket нельзя использовать как access token")
     return UUID(payload["sub"])
 
 
@@ -69,6 +71,7 @@ def get_current_user(
     user = session.get(User, user_id)
     if user is None:
         raise credentials_error
+    session.info["current_user_id"] = user.id
     return user
 
 
@@ -81,3 +84,13 @@ def require_roles(*roles: UserRole):
         return user
 
     return dependency
+
+
+@event.listens_for(Session, "before_flush")
+def assign_document_creator(session: Session, _flush_context, _instances) -> None:
+    user_id = session.info.get("current_user_id")
+    if user_id is None:
+        return
+    for instance in session.new:
+        if isinstance(instance, StockDocument) and instance.created_by_user_id is None:
+            instance.created_by_user_id = user_id

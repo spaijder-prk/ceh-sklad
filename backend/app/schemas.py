@@ -55,6 +55,16 @@ class RepresentativeCreate(BaseModel):
     user_id: UUID | None = None
 
 
+class RepresentativeUpdate(BaseModel):
+    user_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_changes(self):
+        if "user_id" not in self.model_fields_set:
+            raise ValueError("Необходимо передать user_id; null снимает привязку")
+        return self
+
+
 class RepresentativeRead(ORMModel):
     id: UUID
     code: str

@@ -63,6 +63,7 @@ export interface Debt {
 
 export interface DashboardData {
   user: User;
+  users: User[];
   warehouses: Warehouse[];
   products: Product[];
   representatives: Representative[];
@@ -132,19 +133,20 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export async function loadDashboard(): Promise<DashboardData> {
-  const [user, warehouses, products, representatives, warehouseBalances, representativeBalances] =
+  const user = await request<User>("/api/v1/auth/me");
+  if (user.role === "representative") {
+    throw new ApiError(403, "Веб-панель предназначена для администратора и руководителя");
+  }
+
+  const [warehouses, products, representatives, warehouseBalances, representativeBalances, users] =
     await Promise.all([
-      request<User>("/api/v1/auth/me"),
       request<Warehouse[]>("/api/v1/warehouses"),
       request<Product[]>("/api/v1/products"),
       request<Representative[]>("/api/v1/representatives"),
       request<WarehouseBalance[]>("/api/v1/balances/warehouses"),
       request<RepresentativeBalance[]>("/api/v1/balances/representatives"),
+      user.role === "admin" ? request<User[]>("/api/v1/users") : Promise.resolve([]),
     ]);
-
-  if (user.role === "representative") {
-    throw new ApiError(403, "Веб-панель предназначена для администратора и руководителя");
-  }
 
   const debtRows = await Promise.all(
     representatives.map((representative) =>
@@ -157,6 +159,7 @@ export async function loadDashboard(): Promise<DashboardData> {
 
   return {
     user,
+    users,
     warehouses,
     products,
     representatives,
@@ -164,6 +167,23 @@ export async function loadDashboard(): Promise<DashboardData> {
     representativeBalances,
     debts,
   };
+}
+
+export async function createUser(payload: {
+  email: string;
+  password: string;
+  fullName: string;
+  role: UserRole;
+}): Promise<void> {
+  await request("/api/v1/users", {
+    method: "POST",
+    body: JSON.stringify({
+      email: payload.email.trim(),
+      password: payload.password,
+      full_name: payload.fullName.trim(),
+      role: payload.role,
+    }),
+  });
 }
 
 export async function createWarehouse(code: string, name: string): Promise<void> {
@@ -192,10 +212,42 @@ export async function createProduct(payload: {
   });
 }
 
-export async function createRepresentative(code: string, name: string): Promise<void> {
+export async function updateProductPrices(
+  productId: string,
+  retailPrice: string,
+  wholesalePrice: string,
+): Promise<void> {
+  await request(`/api/v1/products/${productId}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      retail_price: normalizeDecimal(retailPrice),
+      wholesale_price: normalizeDecimal(wholesalePrice),
+    }),
+  });
+}
+
+export async function createRepresentative(
+  code: string,
+  name: string,
+  userId?: string,
+): Promise<void> {
   await request("/api/v1/representatives", {
     method: "POST",
-    body: JSON.stringify({ code: code.trim(), name: name.trim() }),
+    body: JSON.stringify({
+      code: code.trim(),
+      name: name.trim(),
+      user_id: userId || null,
+    }),
+  });
+}
+
+export async function updateRepresentativeUser(
+  representativeId: string,
+  userId: string | null,
+): Promise<void> {
+  await request(`/api/v1/representatives/${representativeId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ user_id: userId }),
   });
 }
 

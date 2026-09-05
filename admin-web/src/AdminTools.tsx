@@ -1,13 +1,17 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   DashboardData,
+  UserRole,
   createProduct,
   createRepresentative,
+  createUser,
   createWarehouse,
   issueToRepresentative,
   receiveGoods,
   registerPayment,
   transferBetweenWarehouses,
+  updateProductPrices,
+  updateRepresentativeUser,
 } from "./api";
 
 const money = new Intl.NumberFormat("ru-RU", {
@@ -66,6 +70,19 @@ export function AdminTools({ data, onChanged }: { data: DashboardData; onChanged
 
       <div className="section-heading spaced-heading">
         <div>
+          <p className="eyebrow">Доступ и цены</p>
+          <h2>Учетные записи и прайс</h2>
+          <p>Создание пользователей, привязка представителей и изменение действующих цен.</p>
+        </div>
+      </div>
+      <section className="admin-grid">
+        <UserForm disabled={busy} run={run} />
+        <RepresentativeAccountForm data={data} disabled={busy} run={run} />
+        <ProductPriceForm data={data} disabled={busy} run={run} />
+      </section>
+
+      <div className="section-heading spaced-heading">
+        <div>
           <p className="eyebrow">Справочники</p>
           <h2>Настройка учета</h2>
           <p>Создание складов, товарных позиций и торговых представителей.</p>
@@ -74,7 +91,7 @@ export function AdminTools({ data, onChanged }: { data: DashboardData; onChanged
       <section className="admin-grid">
         <WarehouseForm disabled={busy} run={run} />
         <ProductForm disabled={busy} run={run} />
-        <RepresentativeForm disabled={busy} run={run} />
+        <RepresentativeForm data={data} disabled={busy} run={run} />
       </section>
     </>
   );
@@ -99,7 +116,7 @@ function ReceiptForm({ data, disabled, run }: CommonFormProps) {
   };
 
   return (
-    <FormCard title="Приход товара" subtitle="Зачислить товар на склад" onSubmit={submit} disabled={disabled || !warehouseId || !productId} submitLabel="Провести приход">
+    <FormCard title="Приход товара" subtitle="Зачислить товар на склад" onSubmit={submit} disabled={disabled || !warehouseId || !productId || !validQuantity(quantity)} submitLabel="Провести приход">
       <SelectField label="Склад" value={warehouseId} onChange={setWarehouseId} options={data.warehouses.map((row) => ({ value: row.id, label: `${row.name} · ${row.code}` }))} />
       <ProductSelect data={data} value={productId} onChange={setProductId} />
       <QuantityField value={quantity} onChange={setQuantity} />
@@ -215,6 +232,106 @@ function PaymentForm({ data, disabled, run }: CommonFormProps) {
   );
 }
 
+function UserForm({ disabled, run }: Pick<CommonFormProps, "disabled" | "run">) {
+  const [email, setEmail] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState<UserRole>("representative");
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (password.length < 8) return;
+    const ok = await run(
+      () => createUser({ email, password, fullName, role }),
+      "Учетная запись создана",
+    );
+    if (ok) {
+      setEmail("");
+      setFullName("");
+      setPassword("");
+      setRole("representative");
+    }
+  };
+
+  return (
+    <FormCard title="Новая учетная запись" subtitle="Создать вход для представителя, руководителя или администратора" onSubmit={submit} disabled={disabled || password.length < 8} submitLabel="Создать пользователя">
+      <label>ФИО<input required value={fullName} onChange={(event) => setFullName(event.target.value)} /></label>
+      <label>Email<input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></label>
+      <label>Роль<select value={role} onChange={(event) => setRole(event.target.value as UserRole)}><option value="representative">Торговый представитель</option><option value="manager">Руководитель</option><option value="admin">Администратор</option></select></label>
+      <label>Временный пароль<input required minLength={8} type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} /><small className="field-hint">Минимум 8 символов.</small></label>
+    </FormCard>
+  );
+}
+
+function RepresentativeAccountForm({ data, disabled, run }: CommonFormProps) {
+  const [representativeId, setRepresentativeId] = useState(data.representatives[0]?.id ?? "");
+  const [userId, setUserId] = useState("");
+  useFirstSelection(data.representatives, representativeId, setRepresentativeId);
+
+  const representative = data.representatives.find((row) => row.id === representativeId);
+  useEffect(() => {
+    setUserId(representative?.user_id ?? "");
+  }, [representativeId, representative?.user_id]);
+
+  const users = freeRepresentativeUsers(data, representativeId);
+  const currentUser = data.users.find((user) => user.id === representative?.user_id);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const ok = await run(
+      () => updateRepresentativeUser(representativeId, userId || null),
+      userId ? "Учетная запись привязана" : "Привязка учетной записи снята",
+    );
+    if (ok && !userId) setUserId("");
+  };
+
+  return (
+    <FormCard title="Доступ представителя" subtitle="Привязать или заменить учетную запись существующего представителя" onSubmit={submit} disabled={disabled || !representativeId} submitLabel="Сохранить привязку">
+      <SelectField label="Представитель" value={representativeId} onChange={setRepresentativeId} options={data.representatives.map((row) => ({ value: row.id, label: `${row.name} · ${row.code}` }))} />
+      <label>Учетная запись<select value={userId} onChange={(event) => setUserId(event.target.value)}><option value="">Без учетной записи</option>{users.map((user) => <option key={user.id} value={user.id}>{user.full_name} · {user.email}</option>)}</select></label>
+      <small className="field-hint">{currentUser ? `Сейчас: ${currentUser.email}` : "Сейчас вход для этого представителя не назначен."}</small>
+      {users.length === 0 && !currentUser && <div className="inline-warning">Сначала создайте пользователя с ролью «Торговый представитель».</div>}
+    </FormCard>
+  );
+}
+
+function ProductPriceForm({ data, disabled, run }: CommonFormProps) {
+  const [productId, setProductId] = useState(data.products[0]?.id ?? "");
+  const [retailPrice, setRetailPrice] = useState("");
+  const [wholesalePrice, setWholesalePrice] = useState("");
+  useFirstSelection(data.products, productId, setProductId);
+
+  const product = data.products.find((row) => row.id === productId);
+  useEffect(() => {
+    if (!product) {
+      setRetailPrice("");
+      setWholesalePrice("");
+      return;
+    }
+    setRetailPrice(String(product.retail_price));
+    setWholesalePrice(String(product.wholesale_price));
+  }, [productId, product?.retail_price, product?.wholesale_price]);
+
+  const pricesOk = validMoney(retailPrice, true) && validMoney(wholesalePrice, true);
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!productId || !pricesOk) return;
+    await run(
+      () => updateProductPrices(productId, retailPrice, wholesalePrice),
+      "Цены товара обновлены",
+    );
+  };
+
+  return (
+    <FormCard title="Изменение цен" subtitle="Обновить розничную и оптовую цену товара" onSubmit={submit} disabled={disabled || !productId || !pricesOk} submitLabel="Обновить цены">
+      <ProductSelect data={data} value={productId} onChange={setProductId} />
+      <label>Розничная цена<input required inputMode="decimal" value={retailPrice} onChange={(event) => setRetailPrice(event.target.value)} /></label>
+      <label>Оптовая цена<input required inputMode="decimal" value={wholesalePrice} onChange={(event) => setWholesalePrice(event.target.value)} /></label>
+      <small className="field-hint">Новые цены сразу становятся видны торговым представителям.</small>
+    </FormCard>
+  );
+}
+
 function WarehouseForm({ disabled, run }: Pick<CommonFormProps, "disabled" | "run">) {
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
@@ -240,15 +357,32 @@ function ProductForm({ disabled, run }: Pick<CommonFormProps, "disabled" | "run"
   return <FormCard title="Новый товар" subtitle="Создать позицию и две цены" onSubmit={submit} disabled={disabled || !validMoney(retailPrice, true) || !validMoney(wholesalePrice, true)}><label>Артикул<input required value={sku} onChange={(event) => setSku(event.target.value)} /></label><label>Название<input required value={name} onChange={(event) => setName(event.target.value)} /></label><div className="form-row"><label>Единица<input required value={unit} onChange={(event) => setUnit(event.target.value)} /></label><label>Розница<input required inputMode="decimal" value={retailPrice} onChange={(event) => setRetailPrice(event.target.value)} /></label><label>Опт<input required inputMode="decimal" value={wholesalePrice} onChange={(event) => setWholesalePrice(event.target.value)} /></label></div></FormCard>;
 }
 
-function RepresentativeForm({ disabled, run }: Pick<CommonFormProps, "disabled" | "run">) {
+function RepresentativeForm({ data, disabled, run }: CommonFormProps) {
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
+  const [userId, setUserId] = useState("");
+  const availableUsers = freeRepresentativeUsers(data);
+
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const ok = await run(() => createRepresentative(code, name), "Представитель создан");
-    if (ok) { setCode(""); setName(""); }
+    const ok = await run(
+      () => createRepresentative(code, name, userId || undefined),
+      "Представитель создан",
+    );
+    if (ok) {
+      setCode("");
+      setName("");
+      setUserId("");
+    }
   };
-  return <FormCard title="Новый представитель" subtitle="Создать карточку торгового представителя" onSubmit={submit} disabled={disabled}><label>Код<input required value={code} onChange={(event) => setCode(event.target.value)} /></label><label>Имя<input required value={name} onChange={(event) => setName(event.target.value)} /></label></FormCard>;
+
+  return (
+    <FormCard title="Новый представитель" subtitle="Создать карточку и при необходимости сразу назначить вход" onSubmit={submit} disabled={disabled}>
+      <label>Код<input required value={code} onChange={(event) => setCode(event.target.value)} /></label>
+      <label>Имя<input required value={name} onChange={(event) => setName(event.target.value)} /></label>
+      <label>Учетная запись<select value={userId} onChange={(event) => setUserId(event.target.value)}><option value="">Назначить позже</option>{availableUsers.map((user) => <option key={user.id} value={user.id}>{user.full_name} · {user.email}</option>)}</select></label>
+    </FormCard>
+  );
 }
 
 function ProductSelect({ data, value, onChange }: { data: DashboardData; value: string; onChange: (value: string) => void }) {
@@ -278,6 +412,18 @@ function warehouseQuantity(data: DashboardData, warehouseId: string, productId: 
     (balance) => balance.warehouse_id === warehouseId && balance.product_id === productId,
   );
   return Number(row?.quantity ?? 0);
+}
+
+function freeRepresentativeUsers(data: DashboardData, excludeRepresentativeId?: string) {
+  const usedUserIds = new Set(
+    data.representatives
+      .filter((representative) => representative.id !== excludeRepresentativeId)
+      .map((representative) => representative.user_id)
+      .filter((userId): userId is string => Boolean(userId)),
+  );
+  return data.users.filter(
+    (user) => user.role === "representative" && !usedUserIds.has(user.id),
+  );
 }
 
 function validQuantity(value: string): boolean {

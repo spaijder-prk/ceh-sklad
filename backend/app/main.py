@@ -27,6 +27,7 @@ from .schemas import (
     RepresentativeCreate,
     RepresentativeDebt,
     RepresentativeRead,
+    RepresentativeUpdate,
     ReturnRequest,
     SaleRequest,
     TokenResponse,
@@ -70,7 +71,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.3.0",
+    version="0.3.1",
     description="API складского учета, движения товара и расчетов с торговыми представителями.",
     lifespan=lifespan,
 )
@@ -303,6 +304,55 @@ def create_representative(payload: RepresentativeCreate, _: AdminDep, session: S
         raise HTTPException(
             status_code=409,
             detail="Код представителя или пользователь уже привязан",
+        ) from exc
+    session.refresh(representative)
+    return representative
+
+
+@app.patch(
+    f"{settings.api_prefix}/representatives/{{representative_id}}",
+    response_model=RepresentativeRead,
+    tags=["Справочники"],
+)
+def update_representative(
+    representative_id: UUID,
+    payload: RepresentativeUpdate,
+    _: AdminDep,
+    session: SessionDep,
+):
+    representative = session.get(Representative, representative_id)
+    if representative is None:
+        raise HTTPException(status_code=404, detail="Торговый представитель не найден")
+
+    if payload.user_id is not None:
+        linked_user = session.get(User, payload.user_id)
+        if linked_user is None:
+            raise HTTPException(status_code=404, detail="Пользователь не найден")
+        if linked_user.role != UserRole.REPRESENTATIVE:
+            raise HTTPException(
+                status_code=409,
+                detail="К представителю можно привязать только пользователя с ролью representative",
+            )
+        already_linked = session.scalar(
+            select(Representative).where(
+                Representative.user_id == payload.user_id,
+                Representative.id != representative_id,
+            )
+        )
+        if already_linked is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Учетная запись уже привязана к другому торговому представителю",
+            )
+
+    representative.user_id = payload.user_id
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Не удалось изменить привязку учетной записи",
         ) from exc
     session.refresh(representative)
     return representative

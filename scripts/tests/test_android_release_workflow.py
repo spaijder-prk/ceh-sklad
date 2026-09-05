@@ -14,7 +14,13 @@ class AndroidReleaseContractTests(unittest.TestCase):
         workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
         required_fragments = (
-            "permissions:\n  contents: write",
+            "permissions:\n  contents: write\n  actions: read",
+            "actions/setup-python@v5",
+            'python-version: "3.12"',
+            "refs/heads/main",
+            "git/ref/heads/main",
+            "Проверка проекта",
+            'python -m unittest discover -s scripts/tests -p "test_*.py" -v',
             ":app:assembleRelease",
             ":app:bundleRelease",
             "apksigner",

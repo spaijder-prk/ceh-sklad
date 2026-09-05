@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   release:
@@ -18,6 +19,41 @@ jobs:
     steps:
       - name: Получить код
         uses: actions/checkout@v4
+
+      - name: Установить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Проверить источник релиза и зеленый CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "Подписанный release разрешен только с ветки main." >&2
+            exit 2
+          fi
+
+          MAIN_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          if [ "$MAIN_SHA" != "$GITHUB_SHA" ]; then
+            echo "HEAD main изменился после запуска workflow. Перезапустите release с актуального main." >&2
+            exit 2
+          fi
+
+          PROJECT_CI_COUNT="$(
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=push&per_page=100" \
+              --jq '[.workflow_runs[] | select(.name == "Проверка проекта" and .status == "completed" and .conclusion == "success")] | length'
+          )"
+          if [ "$PROJECT_CI_COUNT" -lt 1 ]; then
+            echo "Для $GITHUB_SHA нет завершенного зеленого workflow «Проверка проекта»." >&2
+            exit 2
+          fi
+
+      - name: Проверить локальные release-контракты
+        run: |
+          python -m compileall scripts/prepare_production_env.py scripts/tests
+          python -m unittest discover -s scripts/tests -p "test_*.py" -v
 
       - name: Установить Java
         uses: actions/setup-java@v5

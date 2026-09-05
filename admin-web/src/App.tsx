@@ -3,6 +3,7 @@ import { AdminTools } from "./AdminTools";
 import { DocumentsView } from "./DocumentsView";
 import { MoneyView } from "./MoneyView";
 import { ReportsView } from "./ReportsView";
+import { useRealtimeUpdates } from "./realtime";
 import {
   ApiError,
   DashboardData,
@@ -48,13 +49,15 @@ export default function App() {
     }
   }, []);
 
+  const realtimeStatus = useRealtimeUpdates(Boolean(data), refresh);
+
   useEffect(() => {
     if (hasToken()) void refresh();
   }, [refresh]);
 
   useEffect(() => {
     if (!data) return;
-    const timer = window.setInterval(() => void refresh(true), 15_000);
+    const timer = window.setInterval(() => void refresh(true), 60_000);
     return () => window.clearInterval(timer);
   }, [data, refresh]);
 
@@ -80,6 +83,11 @@ export default function App() {
 
   const isAdmin = data.user.role === "admin";
   const effectiveView: View = !isAdmin && view === "admin" ? "overview" : view;
+  const realtimeLabel = realtimeStatus === "online"
+    ? "Реальное время"
+    : realtimeStatus === "connecting"
+      ? "Подключение real-time…"
+      : "Резервное обновление · 60 сек";
 
   return (
     <div className="app-shell">
@@ -119,7 +127,7 @@ export default function App() {
           </div>
           <div className="refresh-area">
             <span>{lastUpdated ? `Обновлено ${lastUpdated.toLocaleTimeString("ru-RU")}` : ""}</span>
-            <span className="auto-refresh">Автообновление · 15 сек</span>
+            <span className="auto-refresh">{realtimeLabel}</span>
             <button className="secondary-button" disabled={loading} onClick={() => void refresh()}>
               {loading ? "Обновление…" : "Обновить"}
             </button>

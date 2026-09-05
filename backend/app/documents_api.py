@@ -14,6 +14,7 @@ from .money_api import router as money_router
 from .money_schemas import MoneyPostingRead
 from .money_service import money_journal
 from .realtime import stock_updates
+from .realtime_api import router as realtime_router
 from .reports_api import router as reports_router
 from .security import require_roles
 
@@ -100,3 +101,4 @@ def cancel_document_route(
 router.include_router(reports_router)
 router.include_router(money_router)
 router.include_router(integration_router)
+router.include_router(realtime_router)

@@ -1,8 +1,9 @@
 from collections import defaultdict
 from decimal import Decimal
+from hashlib import blake2b
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from .models import (
@@ -178,6 +179,24 @@ def _change_representative_stock(
     row.quantity = new_quantity
 
 
+def _lock_external_id(session: Session, external_id: str | None) -> None:
+    if not external_id or session.get_bind().dialect.name != "postgresql":
+        return
+
+    # Транзакционная advisory-блокировка сериализует только одинаковые external_id.
+    # Она снимается автоматически при commit/rollback и не требует отдельной таблицы блокировок.
+    digest = blake2b(
+        external_id.encode("utf-8"),
+        digest_size=8,
+        person=b"ceh-idem",
+    ).digest()
+    lock_key = int.from_bytes(digest, byteorder="big", signed=True)
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(:lock_key)"),
+        {"lock_key": lock_key},
+    )
+
+
 def _find_existing_document(session: Session, external_id: str | None) -> StockDocument | None:
     if not external_id:
         return None
@@ -196,6 +215,7 @@ def _new_document(
 
 
 def receive_goods(session: Session, payload: ReceiptRequest) -> OperationResult:
+    _lock_external_id(session, payload.external_id)
     existing = _find_existing_document(session, payload.external_id)
     if existing:
         return OperationResult(document_id=existing.id)
@@ -228,6 +248,7 @@ def receive_goods(session: Session, payload: ReceiptRequest) -> OperationResult:
 
 
 def issue_to_representative(session: Session, payload: IssueRequest) -> OperationResult:
+    _lock_external_id(session, payload.external_id)
     existing = _find_existing_document(session, payload.external_id)
     if existing:
         return OperationResult(document_id=existing.id)
@@ -271,6 +292,7 @@ def issue_to_representative(session: Session, payload: IssueRequest) -> Operatio
 
 
 def transfer_between_warehouses(session: Session, payload: TransferRequest) -> OperationResult:
+    _lock_external_id(session, payload.external_id)
     existing = _find_existing_document(session, payload.external_id)
     if existing:
         return OperationResult(document_id=existing.id)
@@ -314,6 +336,7 @@ def transfer_between_warehouses(session: Session, payload: TransferRequest) -> O
 
 
 def return_from_representative(session: Session, payload: ReturnRequest) -> OperationResult:
+    _lock_external_id(session, payload.external_id)
     existing = _find_existing_document(session, payload.external_id)
     if existing:
         return OperationResult(document_id=existing.id)
@@ -357,6 +380,7 @@ def return_from_representative(session: Session, payload: ReturnRequest) -> Oper
 
 
 def register_sale(session: Session, payload: SaleRequest) -> OperationResult:
+    _lock_external_id(session, payload.external_id)
     existing = _find_existing_document(session, payload.external_id)
     if existing:
         debt_delta = Decimal(
@@ -417,6 +441,7 @@ def register_sale(session: Session, payload: SaleRequest) -> OperationResult:
 
 
 def register_payment(session: Session, payload: PaymentRequest) -> OperationResult:
+    _lock_external_id(session, payload.external_id)
     if payload.external_id:
         existing = session.scalar(
             select(MoneyPosting).where(MoneyPosting.external_id == payload.external_id)

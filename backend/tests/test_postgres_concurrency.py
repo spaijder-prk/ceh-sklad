@@ -10,6 +10,7 @@ from app.db import SessionLocal
 from app.models import (
     DocumentStatus,
     DocumentType,
+    MoneyPosting,
     Product,
     Representative,
     RepresentativeStockBalance,
@@ -17,11 +18,19 @@ from app.models import (
     Warehouse,
     WarehouseStockBalance,
 )
-from app.schemas import IssueRequest, QuantityLine, ReceiptRequest, SaleLine, SaleRequest
+from app.schemas import (
+    IssueRequest,
+    PaymentRequest,
+    QuantityLine,
+    ReceiptRequest,
+    SaleLine,
+    SaleRequest,
+)
 from app.services import (
     ConflictError,
     issue_to_representative,
     receive_goods,
+    register_payment,
     register_sale,
     representative_balances,
     representative_debt,
@@ -214,3 +223,111 @@ def test_concurrent_sales_cannot_overdraw_representative_balance_or_debt():
             )
         )
         assert posted_sales == 5
+
+
+def test_same_external_id_is_idempotent_under_concurrent_stock_requests():
+    with SessionLocal() as session:
+        warehouse = Warehouse(code="IDEM-WH", name="Склад идемпотентности")
+        representative = Representative(code="IDEM-REP", name="Представитель идемпотентности")
+        product = Product(
+            sku="IDEM-SKU",
+            name="Товар идемпотентности",
+            unit="шт",
+            retail_price=Decimal("100.00"),
+            wholesale_price=Decimal("80.00"),
+        )
+        session.add_all([warehouse, representative, product])
+        session.commit()
+        receive_goods(
+            session,
+            ReceiptRequest(
+                warehouse_id=warehouse.id,
+                external_id="idem-prepare-stock",
+                lines=[QuantityLine(product_id=product.id, quantity=Decimal("10.000"))],
+            ),
+        )
+        warehouse_id = warehouse.id
+        representative_id = representative.id
+        product_id = product.id
+
+    barrier = Barrier(2)
+
+    def issue_same_request(_: int):
+        with SessionLocal() as session:
+            barrier.wait()
+            return issue_to_representative(
+                session,
+                IssueRequest(
+                    warehouse_id=warehouse_id,
+                    representative_id=representative_id,
+                    external_id="idem-concurrent-issue",
+                    lines=[QuantityLine(product_id=product_id, quantity=Decimal("2.000"))],
+                ),
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(issue_same_request, range(2)))
+
+    assert results[0].document_id is not None
+    assert results[0].document_id == results[1].document_id
+
+    with SessionLocal() as session:
+        warehouse_balance = session.scalar(
+            select(WarehouseStockBalance).where(
+                WarehouseStockBalance.warehouse_id == warehouse_id,
+                WarehouseStockBalance.product_id == product_id,
+            )
+        )
+        representative_balance = session.scalar(
+            select(RepresentativeStockBalance).where(
+                RepresentativeStockBalance.representative_id == representative_id,
+                RepresentativeStockBalance.product_id == product_id,
+            )
+        )
+        assert warehouse_balance is not None
+        assert representative_balance is not None
+        assert Decimal(warehouse_balance.quantity) == Decimal("8.000")
+        assert Decimal(representative_balance.quantity) == Decimal("2.000")
+        assert session.scalar(
+            select(func.count(StockDocument.id)).where(
+                StockDocument.external_id == "idem-concurrent-issue"
+            )
+        ) == 1
+
+
+def test_same_external_id_is_idempotent_under_concurrent_payments():
+    with SessionLocal() as session:
+        representative = Representative(code="IDEM-PAY-REP", name="Представитель платежа")
+        session.add(representative)
+        session.commit()
+        representative_id = representative.id
+
+    barrier = Barrier(2)
+
+    def pay_same_request(_: int):
+        with SessionLocal() as session:
+            barrier.wait()
+            return register_payment(
+                session,
+                PaymentRequest(
+                    representative_id=representative_id,
+                    amount=Decimal("100.00"),
+                    external_id="idem-concurrent-payment",
+                ),
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(pay_same_request, range(2)))
+
+    assert results[0].money_posting_id is not None
+    assert results[0].money_posting_id == results[1].money_posting_id
+    assert results[0].debt_delta == Decimal("-100.00")
+    assert results[1].debt_delta == Decimal("-100.00")
+
+    with SessionLocal() as session:
+        assert session.scalar(
+            select(func.count(MoneyPosting.id)).where(
+                MoneyPosting.external_id == "idem-concurrent-payment"
+            )
+        ) == 1
+        assert representative_debt(session, representative_id).debt == Decimal("-100.00")

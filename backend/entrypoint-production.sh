@@ -56,8 +56,9 @@ PY
 )"
 
 alembic upgrade head
-exec uvicorn app.main:app \
+exec uvicorn app.observed_app:app \
     --host 0.0.0.0 \
     --port 8000 \
     --proxy-headers \
-    --forwarded-allow-ips="*"
+    --forwarded-allow-ips="*" \
+    --no-access-log

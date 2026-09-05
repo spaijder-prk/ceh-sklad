@@ -66,6 +66,22 @@ services:
       retries: 5
       start_period: 20s
 
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${CEH_PROMETHEUS_RETENTION:-15d}
+    volumes:
+      - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ceh_prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:${CEH_PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      backend:
+        condition: service_healthy
+
   web:
     build:
       context: ./admin-web
@@ -82,6 +98,7 @@ services:
 
 volumes:
   ceh_postgres_data:
+  ceh_prometheus_data:
 
 secrets:
   db_password:

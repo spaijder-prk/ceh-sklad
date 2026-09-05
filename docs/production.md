@@ -1,6 +1,6 @@
 # Production-развертывание
 
-Production-контур состоит из PostgreSQL, Redis, FastAPI backend и Nginx. Nginx раздает собранную веб-панель, завершает TLS и проксирует REST/WebSocket на backend. Redis используется только как общий fan-out real-time событий между экземплярами backend; источником учетных данных остается PostgreSQL.
+Production-контур состоит из PostgreSQL, Redis, FastAPI backend, Prometheus и Nginx. Nginx раздает собранную веб-панель, завершает TLS и проксирует REST/WebSocket на backend. Redis используется только как общий fan-out real-time событий между экземплярами backend; источником учетных данных остается PostgreSQL. Prometheus собирает технические метрики только внутри Docker-сети.
 
 ## 1. Подготовить переменные
 
@@ -8,7 +8,7 @@ Production-контур состоит из PostgreSQL, Redis, FastAPI backend �
 cp .env.production.example .env.production
 ```
 
-Проверьте имя БД, пользователя, публичные порты и пути к TLS-сертификату.
+Проверьте имя БД, пользователя, публичные порты, локальный порт Prometheus и пути к TLS-сертификату.
 
 ## 2. Создать секреты вне Git
 
@@ -49,15 +49,32 @@ docker compose --env-file .env.production -f compose.production.yml up -d
 
 Backend перед стартом выполняет `alembic upgrade head` и только после успешной миграции запускает Uvicorn. При заданном `CEH_REDIS_URL` приложение подключается к Redis Pub/Sub на startup; если Redis недоступен при старте production-контейнера, health/dependency-механизм Compose не пропустит backend раньше broker.
 
+Prometheus стартует после успешного healthcheck backend и опрашивает внутренний `/metrics` раз в 15 секунд.
+
 ## 5. Проверка
 
 ```bash
 docker compose --env-file .env.production -f compose.production.yml ps
 curl -I https://<ваш-домен>/
 curl https://<ваш-домен>/health
+curl http://127.0.0.1:9090/-/healthy
 ```
 
-PostgreSQL, Redis и backend имеют контейнерные healthcheck. Внешний доступ к PostgreSQL, Redis и порту backend не публикуется: наружу открыты только Nginx 80/443.
+PostgreSQL, Redis и backend имеют контейнерные healthcheck. Внешний доступ к PostgreSQL, Redis и порту backend не публикуется: наружу открыты только Nginx 80/443. Prometheus привязан к `127.0.0.1` production-хоста и также недоступен напрямую из внешней сети.
+
+## Мониторинг
+
+Backend production запускается через `app.observed_app:app`, который добавляет Prometheus-метрики и структурированный JSON request log. Стандартный Uvicorn access log отключен, чтобы один запрос не записывался дважды.
+
+Prometheus читает:
+
+```text
+http://backend:8000/metrics
+```
+
+Nginx этот маршрут не проксирует. Для удаленного просмотра Prometheus используйте SSH-туннель к loopback-порту, а не открывайте 9090 в интернет.
+
+Подробное описание метрик, `X-Request-ID` и формата логов: `docs/monitoring.md`.
 
 ## Real-time и несколько backend
 

@@ -7,6 +7,12 @@ import redis.asyncio as redis
 from fastapi import WebSocket
 
 from .config import settings
+from .observability import (
+    REALTIME_MESSAGES,
+    REALTIME_REDIS_CONNECTED,
+    REALTIME_REDIS_PUBLISH_FAILURES,
+    WEBSOCKET_CONNECTIONS,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -31,6 +37,7 @@ class ConnectionManager:
         if not self._redis_url or self._redis is not None:
             return
 
+        REALTIME_REDIS_CONNECTED.set(0)
         client = redis.from_url(self._redis_url, decode_responses=True)
         await client.ping()
         pubsub = client.pubsub()
@@ -41,6 +48,7 @@ class ConnectionManager:
             self._listen_redis(),
             name="ceh-realtime-redis-listener",
         )
+        REALTIME_REDIS_CONNECTED.set(1)
         logger.info("Подключен Redis fan-out канала %s", self._redis_channel)
 
     async def stop(self) -> None:
@@ -63,15 +71,19 @@ class ConnectionManager:
         if self._redis is not None:
             await self._redis.aclose()
             self._redis = None
+        REALTIME_REDIS_CONNECTED.set(0)
 
     async def connect(self, websocket: WebSocket) -> None:
         await websocket.accept()
         self._connections.add(websocket)
+        WEBSOCKET_CONNECTIONS.set(len(self._connections))
 
     def disconnect(self, websocket: WebSocket) -> None:
         self._connections.discard(websocket)
+        WEBSOCKET_CONNECTIONS.set(len(self._connections))
 
     async def broadcast(self, message: dict) -> None:
+        REALTIME_MESSAGES.labels(source="local").inc()
         await self._broadcast_local(message)
 
         if self._redis is None:
@@ -84,6 +96,7 @@ class ConnectionManager:
         try:
             await self._redis.publish(self._redis_channel, envelope)
         except Exception:
+            REALTIME_REDIS_PUBLISH_FAILURES.inc()
             # Локальные клиенты уже получили событие; сбой брокера не должен откатывать учетную операцию.
             logger.exception("Не удалось опубликовать real-time событие в Redis")
 
@@ -107,6 +120,7 @@ class ConnectionManager:
                     ignore_subscribe_messages=True,
                     timeout=1.0,
                 )
+                REALTIME_REDIS_CONNECTED.set(1)
                 if item is None:
                     continue
                 data = item.get("data")
@@ -116,6 +130,7 @@ class ConnectionManager:
             except asyncio.CancelledError:
                 raise
             except Exception:
+                REALTIME_REDIS_CONNECTED.set(0)
                 logger.exception("Ошибка чтения Redis Pub/Sub; повтор через секунду")
                 await asyncio.sleep(1)
 
@@ -131,6 +146,7 @@ class ConnectionManager:
         message = envelope.get("message")
         if not isinstance(message, dict):
             return
+        REALTIME_MESSAGES.labels(source="redis").inc()
         await self._broadcast_local(message)
 
 

@@ -1,7 +1,8 @@
+from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from .models import MoneyOperation, MoneyPosting, Representative
@@ -16,17 +17,32 @@ def money_journal(
     session: Session,
     limit: int = 100,
     representative_id: UUID | None = None,
+    after_created_at: datetime | None = None,
+    after_id: UUID | None = None,
+    ascending: bool = False,
 ) -> list[MoneyPostingRead]:
-    statement = (
-        select(MoneyPosting, Representative)
-        .join(Representative, Representative.id == MoneyPosting.representative_id)
-        .order_by(MoneyPosting.created_at.desc(), MoneyPosting.id.desc())
-        .limit(limit)
+    statement = select(MoneyPosting, Representative).join(
+        Representative, Representative.id == MoneyPosting.representative_id
     )
     if representative_id is not None:
         statement = statement.where(MoneyPosting.representative_id == representative_id)
 
-    rows = session.execute(statement).all()
+    if (after_created_at is None) != (after_id is None):
+        raise ValueError("Курсор денежной проводки должен содержать время и идентификатор")
+    if after_created_at is not None and after_id is not None:
+        statement = statement.where(
+            or_(
+                MoneyPosting.created_at > after_created_at,
+                and_(MoneyPosting.created_at == after_created_at, MoneyPosting.id > after_id),
+            )
+        )
+
+    if ascending:
+        statement = statement.order_by(MoneyPosting.created_at.asc(), MoneyPosting.id.asc())
+    else:
+        statement = statement.order_by(MoneyPosting.created_at.desc(), MoneyPosting.id.desc())
+
+    rows = session.execute(statement.limit(limit)).all()
     reversal_ids = set(
         session.scalars(
             select(MoneyPosting.external_id).where(

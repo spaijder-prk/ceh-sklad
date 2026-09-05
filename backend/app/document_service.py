@@ -1,8 +1,9 @@
 from collections import defaultdict
+from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from .document_schemas import DocumentCancelResult, DocumentLineRead, DocumentRead
@@ -15,6 +16,7 @@ from .models import (
     StockDocument,
     StockPosting,
     Warehouse,
+    utcnow,
 )
 from .services import (
     NotFoundError,
@@ -29,6 +31,9 @@ def document_journal(
     session: Session,
     limit: int = 100,
     representative_id: UUID | None = None,
+    after_updated_at: datetime | None = None,
+    after_id: UUID | None = None,
+    ascending: bool = False,
 ) -> list[DocumentRead]:
     statement = select(StockDocument)
     if representative_id is not None:
@@ -37,68 +42,81 @@ def document_journal(
         )
         statement = statement.where(StockDocument.id.in_(representative_documents))
 
-    documents = session.scalars(
-        statement
-        .order_by(StockDocument.posted_at.desc(), StockDocument.id.desc())
-        .limit(limit)
-    ).all()
+    if (after_updated_at is None) != (after_id is None):
+        raise ValueError("Курсор документа должен содержать время и идентификатор")
+    if after_updated_at is not None and after_id is not None:
+        statement = statement.where(
+            or_(
+                StockDocument.updated_at > after_updated_at,
+                and_(
+                    StockDocument.updated_at == after_updated_at,
+                    StockDocument.id > after_id,
+                ),
+            )
+        )
 
-    result: list[DocumentRead] = []
-    for document in documents:
-        line_rows = session.execute(
-            select(
-                StockPosting.product_id,
-                Product.sku,
-                Product.name,
-                StockPosting.warehouse_id,
-                Warehouse.name,
-                StockPosting.representative_id,
-                Representative.name,
-                StockPosting.quantity,
-                StockPosting.unit_price,
-            )
-            .join(Product, Product.id == StockPosting.product_id)
-            .outerjoin(Warehouse, Warehouse.id == StockPosting.warehouse_id)
-            .outerjoin(Representative, Representative.id == StockPosting.representative_id)
-            .where(StockPosting.document_id == document.id)
-            .order_by(Product.name, StockPosting.id)
-        ).all()
-        sale_amount = Decimal(
-            session.scalar(
-                select(func.coalesce(func.sum(MoneyPosting.amount), 0)).where(
-                    MoneyPosting.document_id == document.id,
-                    MoneyPosting.operation == MoneyOperation.SALE,
-                )
-            )
-            or 0
+    if ascending:
+        statement = statement.order_by(StockDocument.updated_at.asc(), StockDocument.id.asc())
+    else:
+        statement = statement.order_by(StockDocument.posted_at.desc(), StockDocument.id.desc())
+
+    documents = session.scalars(statement.limit(limit)).all()
+    return [_document_to_read(session, document) for document in documents]
+
+
+def _document_to_read(session: Session, document: StockDocument) -> DocumentRead:
+    line_rows = session.execute(
+        select(
+            StockPosting.product_id,
+            Product.sku,
+            Product.name,
+            StockPosting.warehouse_id,
+            Warehouse.name,
+            StockPosting.representative_id,
+            Representative.name,
+            StockPosting.quantity,
+            StockPosting.unit_price,
         )
-        result.append(
-            DocumentRead(
-                id=document.id,
-                document_type=document.document_type,
-                status=document.status,
-                external_id=document.external_id,
-                comment=document.comment,
-                created_at=document.created_at,
-                posted_at=document.posted_at,
-                sale_amount=sale_amount,
-                lines=[
-                    DocumentLineRead(
-                        product_id=row[0],
-                        sku=row[1],
-                        product_name=row[2],
-                        warehouse_id=row[3],
-                        warehouse_name=row[4],
-                        representative_id=row[5],
-                        representative_name=row[6],
-                        quantity=row[7],
-                        unit_price=row[8],
-                    )
-                    for row in line_rows
-                ],
+        .join(Product, Product.id == StockPosting.product_id)
+        .outerjoin(Warehouse, Warehouse.id == StockPosting.warehouse_id)
+        .outerjoin(Representative, Representative.id == StockPosting.representative_id)
+        .where(StockPosting.document_id == document.id)
+        .order_by(Product.name, StockPosting.id)
+    ).all()
+    sale_amount = Decimal(
+        session.scalar(
+            select(func.coalesce(func.sum(MoneyPosting.amount), 0)).where(
+                MoneyPosting.document_id == document.id,
+                MoneyPosting.operation == MoneyOperation.SALE,
             )
         )
-    return result
+        or 0
+    )
+    return DocumentRead(
+        id=document.id,
+        document_type=document.document_type,
+        status=document.status,
+        external_id=document.external_id,
+        comment=document.comment,
+        created_at=document.created_at,
+        posted_at=document.posted_at,
+        updated_at=document.updated_at,
+        sale_amount=sale_amount,
+        lines=[
+            DocumentLineRead(
+                product_id=row[0],
+                sku=row[1],
+                product_name=row[2],
+                warehouse_id=row[3],
+                warehouse_name=row[4],
+                representative_id=row[5],
+                representative_name=row[6],
+                quantity=row[7],
+                unit_price=row[8],
+            )
+            for row in line_rows
+        ],
+    )
 
 
 def cancel_document(session: Session, document_id: UUID) -> DocumentCancelResult:
@@ -187,6 +205,7 @@ def cancel_document(session: Session, document_id: UUID) -> DocumentCancelResult
         debt_changed = True
 
     document.status = DocumentStatus.CANCELLED
+    document.updated_at = utcnow()
     session.commit()
     return DocumentCancelResult(
         document_id=document.id,

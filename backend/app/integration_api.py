@@ -8,8 +8,12 @@ from .config import settings
 from .db import get_session
 from .document_schemas import DocumentRead
 from .document_service import document_journal
-from .integration_schemas import OneCSnapshot
-from .integration_service import build_1c_snapshot
+from .integration_schemas import OneCDocumentPage, OneCMoneyPostingPage, OneCSnapshot
+from .integration_service import (
+    build_1c_document_page,
+    build_1c_money_posting_page,
+    build_1c_snapshot,
+)
 from .money_schemas import MoneyPostingRead
 from .money_service import money_journal
 from .realtime import stock_updates
@@ -79,6 +83,10 @@ def publish_change(
     )
 
 
+def _cursor_error(error: ValueError) -> HTTPException:
+    return HTTPException(status_code=422, detail=str(error))
+
+
 @router.get("/snapshot", response_model=OneCSnapshot)
 def snapshot(_: IntegrationDep, session: SessionDep):
     return build_1c_snapshot(session)
@@ -93,6 +101,19 @@ def documents(
     return document_journal(session, limit=limit)
 
 
+@router.get("/documents/changes", response_model=OneCDocumentPage)
+def document_changes(
+    _: IntegrationDep,
+    session: SessionDep,
+    cursor: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=200, ge=1, le=1000),
+):
+    try:
+        return build_1c_document_page(session, cursor=cursor, limit=limit)
+    except ValueError as error:
+        raise _cursor_error(error) from error
+
+
 @router.get("/money-postings", response_model=list[MoneyPostingRead])
 def money_postings(
     _: IntegrationDep,
@@ -100,6 +121,19 @@ def money_postings(
     limit: int = Query(default=200, ge=1, le=1000),
 ):
     return money_journal(session, limit=limit)
+
+
+@router.get("/money-postings/changes", response_model=OneCMoneyPostingPage)
+def money_posting_changes(
+    _: IntegrationDep,
+    session: SessionDep,
+    cursor: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=200, ge=1, le=1000),
+):
+    try:
+        return build_1c_money_posting_page(session, cursor=cursor, limit=limit)
+    except ValueError as error:
+        raise _cursor_error(error) from error
 
 
 @router.post("/operations/receipt", response_model=OperationResult, status_code=201)

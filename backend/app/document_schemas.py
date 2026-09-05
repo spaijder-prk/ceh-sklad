@@ -27,6 +27,7 @@ class DocumentRead(BaseModel):
     comment: str | None = None
     created_at: datetime
     posted_at: datetime
+    updated_at: datetime
     sale_amount: Decimal = Decimal("0")
     lines: list[DocumentLineRead]
 

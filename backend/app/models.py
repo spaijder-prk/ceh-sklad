@@ -112,6 +112,9 @@ class StockDocument(Base):
     created_by_user_id: Mapped[UUID | None] = mapped_column(Uuid, ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     posted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, index=True
+    )
 
     postings: Mapped[list[StockPosting]] = relationship(
         back_populates="document", cascade="all, delete-orphan"

@@ -1,0 +1,29 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ceh_sklad
+      POSTGRES_USER: ceh
+      POSTGRES_PASSWORD: ci-backup-password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ceh -d ceh_sklad"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - ceh_backup_restore_ci_db:/var/lib/postgresql/data
+
+  redis:
+    image: alpine:3.22
+    command: ["sh", "-c", "sleep 3600"]
+
+  backend:
+    image: alpine:3.22
+    command: ["sh", "-c", "sleep 3600"]
+
+  web:
+    image: alpine:3.22
+    command: ["sh", "-c", "sleep 3600"]
+
+volumes:
+  ceh_backup_restore_ci_db:

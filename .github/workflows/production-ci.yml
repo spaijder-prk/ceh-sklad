@@ -64,3 +64,67 @@ jobs:
 
       - name: Собрать production веб-панель
         run: docker build -t ceh-sklad-web:ci ./admin-web
+
+      - name: Подготовить изолированную БД для проверки backup/restore
+        env:
+          CEH_COMPOSE_FILE: ops/backup-restore-ci.compose.yml
+        run: |
+          set -Eeuo pipefail
+          touch /tmp/ceh-backup-ci.env
+          docker compose -f "$CEH_COMPOSE_FILE" up -d --wait db
+          docker compose -f "$CEH_COMPOSE_FILE" exec -T db psql \
+            -v ON_ERROR_STOP=1 \
+            -U ceh \
+            -d ceh_sklad <<'SQL'
+          CREATE TABLE backup_probe (
+              id integer PRIMARY KEY,
+              label text NOT NULL,
+              amount numeric(12,3) NOT NULL
+          );
+          INSERT INTO backup_probe (id, label, amount) VALUES
+              (1, 'первая', 10.125),
+              (2, 'вторая', 2.875);
+          SQL
+
+      - name: Создать реальную резервную копию тестовой БД
+        env:
+          CEH_COMPOSE_FILE: ops/backup-restore-ci.compose.yml
+          CEH_ENV_FILE: /tmp/ceh-backup-ci.env
+          CEH_BACKUP_DIR: /tmp/ceh-backups
+          CEH_BACKUP_RETENTION_DAYS: "0"
+        run: |
+          set -Eeuo pipefail
+          ops/backup-postgres.sh
+          dump_file="$(find /tmp/ceh-backups -maxdepth 1 -type f -name 'ceh_sklad_*.dump' | head -n 1)"
+          test -n "$dump_file"
+          test -f "${dump_file}.sha256"
+          echo "CEH_CI_BACKUP_FILE=$dump_file" >> "$GITHUB_ENV"
+
+      - name: Восстановить резервную копию в чистую БД
+        env:
+          CEH_COMPOSE_FILE: ops/backup-restore-ci.compose.yml
+          CEH_ENV_FILE: /tmp/ceh-backup-ci.env
+          CEH_CONFIRM_RESTORE: "YES"
+        run: |
+          set -Eeuo pipefail
+          docker compose -f "$CEH_COMPOSE_FILE" exec -T db psql \
+            -v ON_ERROR_STOP=1 -U ceh -d ceh_sklad \
+            -c "DROP TABLE backup_probe;"
+          ops/restore-postgres.sh "$CEH_CI_BACKUP_FILE"
+
+      - name: Сверить восстановленные данные
+        env:
+          CEH_COMPOSE_FILE: ops/backup-restore-ci.compose.yml
+        run: |
+          set -Eeuo pipefail
+          actual="$(docker compose -f "$CEH_COMPOSE_FILE" exec -T db psql \
+            -At -v ON_ERROR_STOP=1 -U ceh -d ceh_sklad \
+            -c "SELECT count(*) || '|' || sum(amount)::text || '|' || string_agg(label, ',' ORDER BY id) FROM backup_probe;")"
+          if [[ "$actual" != "2|13.000|первая,вторая" ]]; then
+            echo "Восстановленные данные не совпали: $actual" >&2
+            exit 1
+          fi
+
+      - name: Удалить тестовые контейнеры backup/restore
+        if: always()
+        run: docker compose -f ops/backup-restore-ci.compose.yml down -v --remove-orphans

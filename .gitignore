@@ -12,3 +12,7 @@ __pycache__/
 .DS_Store
 secrets/
 backups/
+*.jks
+*.keystore
+keystore.properties
+signing.properties

@@ -1,8 +1,54 @@
+import org.gradle.api.GradleException
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.devtools.ksp")
 }
+
+fun environmentValue(name: String): String? = providers.environmentVariable(name).orNull
+    ?.trim()
+    ?.takeIf { it.isNotEmpty() }
+
+fun quotedBuildConfig(value: String): String = "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+
+fun normalizedHttpsBaseUrl(raw: String): String {
+    val value = raw.trim()
+    if (!value.startsWith("https://", ignoreCase = true)) {
+        throw GradleException("CEH_ANDROID_API_BASE_URL для release должен начинаться с https://")
+    }
+    return if (value.endsWith("/")) value else "$value/"
+}
+
+fun positiveVersionCode(): Int {
+    val raw = environmentValue("CEH_ANDROID_VERSION_CODE") ?: return 1
+    return raw.toIntOrNull()?.takeIf { it > 0 }
+        ?: throw GradleException("CEH_ANDROID_VERSION_CODE должен быть положительным целым числом")
+}
+
+val releaseRequested = gradle.startParameter.taskNames.any {
+    it.contains("release", ignoreCase = true)
+}
+val releaseApiBaseUrl = environmentValue("CEH_ANDROID_API_BASE_URL")?.let(::normalizedHttpsBaseUrl)
+    ?: if (releaseRequested) {
+        throw GradleException("Для release-сборки задайте CEH_ANDROID_API_BASE_URL с HTTPS-адресом backend")
+    } else {
+        "https://example.invalid/"
+    }
+
+val signingEnvironment = mapOf(
+    "CEH_ANDROID_KEYSTORE_FILE" to environmentValue("CEH_ANDROID_KEYSTORE_FILE"),
+    "CEH_ANDROID_KEYSTORE_PASSWORD" to environmentValue("CEH_ANDROID_KEYSTORE_PASSWORD"),
+    "CEH_ANDROID_KEY_ALIAS" to environmentValue("CEH_ANDROID_KEY_ALIAS"),
+    "CEH_ANDROID_KEY_PASSWORD" to environmentValue("CEH_ANDROID_KEY_PASSWORD"),
+)
+val missingSigningEnvironment = signingEnvironment.filterValues { it == null }.keys
+if (releaseRequested && missingSigningEnvironment.isNotEmpty()) {
+    throw GradleException(
+        "Для release-сборки не заданы параметры подписи: ${missingSigningEnvironment.joinToString()}",
+    )
+}
+val releaseSigningConfigured = missingSigningEnvironment.isEmpty()
 
 android {
     namespace = "ru.ceh.sklad"
@@ -12,10 +58,31 @@ android {
         applicationId = "ru.ceh.sklad"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = positiveVersionCode()
+        versionName = environmentValue("CEH_ANDROID_VERSION_NAME") ?: "0.1.0"
+    }
 
-        buildConfigField("String", "API_BASE_URL", "\"http://10.0.2.2:8000/\"")
+    signingConfigs {
+        if (releaseSigningConfigured) {
+            create("release") {
+                storeFile = file(signingEnvironment.getValue("CEH_ANDROID_KEYSTORE_FILE")!!)
+                storePassword = signingEnvironment.getValue("CEH_ANDROID_KEYSTORE_PASSWORD")!!
+                keyAlias = signingEnvironment.getValue("CEH_ANDROID_KEY_ALIAS")!!
+                keyPassword = signingEnvironment.getValue("CEH_ANDROID_KEY_PASSWORD")!!
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("debug") {
+            buildConfigField("String", "API_BASE_URL", quotedBuildConfig("http://10.0.2.2:8000/"))
+        }
+        getByName("release") {
+            buildConfigField("String", "API_BASE_URL", quotedBuildConfig(releaseApiBaseUrl))
+            if (releaseSigningConfigured) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
     }
 
     buildFeatures {

@@ -4,13 +4,141 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .document_service import document_journal
-from .integration_schemas import OneCDocumentPage, OneCMoneyPostingPage, OneCSnapshot
+from .integration_models import OneCEntityLink, OneCEntityType
+from .integration_schemas import (
+    OneCDocumentPage,
+    OneCEntityLinkRead,
+    OneCEntityLinkWrite,
+    OneCMoneyPostingPage,
+    OneCSnapshot,
+)
 from .models import Product, Representative, Warehouse
 from .money_service import money_journal
-from .services import representative_balances, representative_debt, warehouse_balances
+from .services import (
+    ConflictError,
+    NotFoundError,
+    representative_balances,
+    representative_debt,
+    warehouse_balances,
+)
+
+
+_ENTITY_META = {
+    OneCEntityType.WAREHOUSE: (Warehouse, "Склад", "code", "name"),
+    OneCEntityType.PRODUCT: (Product, "Товар", "sku", "name"),
+    OneCEntityType.REPRESENTATIVE: (
+        Representative,
+        "Торговый представитель",
+        "code",
+        "name",
+    ),
+}
+
+
+def _entity_info(
+    session: Session,
+    entity_type: OneCEntityType,
+    backend_id: UUID,
+):
+    model, label, code_field, name_field = _ENTITY_META[entity_type]
+    entity = session.get(model, backend_id)
+    if entity is None:
+        raise NotFoundError(f"{label} не найден")
+    return entity, getattr(entity, code_field), getattr(entity, name_field)
+
+
+def _link_to_read(session: Session, link: OneCEntityLink) -> OneCEntityLinkRead:
+    entity_type = OneCEntityType(link.entity_type)
+    _, code, name = _entity_info(session, entity_type, link.backend_id)
+    return OneCEntityLinkRead(
+        entity_type=entity_type,
+        backend_id=link.backend_id,
+        external_ref=link.external_ref,
+        backend_code=code,
+        backend_name=name,
+        created_at=link.created_at,
+        updated_at=link.updated_at,
+    )
+
+
+def list_1c_entity_links(session: Session) -> list[OneCEntityLinkRead]:
+    links = session.scalars(
+        select(OneCEntityLink).order_by(
+            OneCEntityLink.entity_type,
+            OneCEntityLink.external_ref,
+        )
+    ).all()
+    return [_link_to_read(session, link) for link in links]
+
+
+def upsert_1c_entity_link(
+    session: Session,
+    payload: OneCEntityLinkWrite,
+) -> OneCEntityLinkRead:
+    external_ref = payload.external_ref.strip()
+    if not external_ref:
+        raise ValueError("Ссылка 1С не может быть пустой")
+
+    _entity_info(session, payload.entity_type, payload.backend_id)
+
+    conflicting = session.scalar(
+        select(OneCEntityLink).where(
+            OneCEntityLink.entity_type == payload.entity_type,
+            OneCEntityLink.external_ref == external_ref,
+            OneCEntityLink.backend_id != payload.backend_id,
+        )
+    )
+    if conflicting is not None:
+        raise ConflictError(
+            "Ссылка 1С уже привязана к другой сущности этого типа"
+        )
+
+    link = session.scalar(
+        select(OneCEntityLink).where(
+            OneCEntityLink.entity_type == payload.entity_type,
+            OneCEntityLink.backend_id == payload.backend_id,
+        )
+    )
+    if link is None:
+        link = OneCEntityLink(
+            entity_type=payload.entity_type,
+            backend_id=payload.backend_id,
+            external_ref=external_ref,
+        )
+        session.add(link)
+    else:
+        link.external_ref = external_ref
+
+    try:
+        session.commit()
+    except IntegrityError as error:
+        session.rollback()
+        raise ConflictError(
+            "Не удалось сохранить соответствие: ссылка 1С уже используется"
+        ) from error
+    session.refresh(link)
+    return _link_to_read(session, link)
+
+
+def resolve_1c_entity_link(
+    session: Session,
+    entity_type: OneCEntityType,
+    external_ref: str,
+) -> OneCEntityLinkRead:
+    normalized_ref = external_ref.strip()
+    link = session.scalar(
+        select(OneCEntityLink).where(
+            OneCEntityLink.entity_type == entity_type,
+            OneCEntityLink.external_ref == normalized_ref,
+        )
+    )
+    if link is None:
+        raise NotFoundError("Соответствие для ссылки 1С не найдено")
+    return _link_to_read(session, link)
 
 
 def build_1c_snapshot(session: Session) -> OneCSnapshot:
@@ -23,6 +151,7 @@ def build_1c_snapshot(session: Session) -> OneCSnapshot:
         warehouse_balances=warehouse_balances(session),
         representative_balances=representative_balances(session),
         debts=[representative_debt(session, representative.id) for representative in representatives],
+        entity_links=list_1c_entity_links(session),
     )
 
 

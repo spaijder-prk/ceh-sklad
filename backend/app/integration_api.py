@@ -8,11 +8,21 @@ from .config import settings
 from .db import get_session
 from .document_schemas import DocumentRead
 from .document_service import document_journal
-from .integration_schemas import OneCDocumentPage, OneCMoneyPostingPage, OneCSnapshot
+from .integration_models import OneCEntityType
+from .integration_schemas import (
+    OneCDocumentPage,
+    OneCEntityLinkRead,
+    OneCEntityLinkWrite,
+    OneCMoneyPostingPage,
+    OneCSnapshot,
+)
 from .integration_service import (
     build_1c_document_page,
     build_1c_money_posting_page,
     build_1c_snapshot,
+    list_1c_entity_links,
+    resolve_1c_entity_link,
+    upsert_1c_entity_link,
 )
 from .money_schemas import MoneyPostingRead
 from .money_service import money_journal
@@ -90,6 +100,30 @@ def _cursor_error(error: ValueError) -> HTTPException:
 @router.get("/snapshot", response_model=OneCSnapshot)
 def snapshot(_: IntegrationDep, session: SessionDep):
     return build_1c_snapshot(session)
+
+
+@router.get("/entity-links", response_model=list[OneCEntityLinkRead])
+def entity_links(_: IntegrationDep, session: SessionDep):
+    return list_1c_entity_links(session)
+
+
+@router.put("/entity-links", response_model=OneCEntityLinkRead)
+def put_entity_link(
+    payload: OneCEntityLinkWrite,
+    _: IntegrationDep,
+    session: SessionDep,
+):
+    return upsert_1c_entity_link(session, payload)
+
+
+@router.get("/entity-links/resolve", response_model=OneCEntityLinkRead)
+def resolve_entity_link(
+    _: IntegrationDep,
+    session: SessionDep,
+    entity_type: OneCEntityType = Query(),
+    external_ref: str = Query(min_length=1, max_length=255),
+):
+    return resolve_1c_entity_link(session, entity_type, external_ref)
 
 
 @router.get("/documents", response_model=list[DocumentRead])

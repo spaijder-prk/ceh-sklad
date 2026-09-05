@@ -8,7 +8,20 @@
 - `restore-postgres.sh` — восстанавливает копию с обязательным явным подтверждением;
 - `backup-restore-ci.compose.yml` — изолированный PostgreSQL для CI-проверки backup/restore;
 - `prometheus.yml` — конфигурация Prometheus;
+- `create-first-admin.py` — создает первого администратора и сразу проверяет вход;
 - `smoke-production.py` — сквозная проверка одноразового production-контура через HTTPS/Nginx.
+
+## Первый администратор
+
+После первого запуска пустой production-базы выполните:
+
+```bash
+CEH_BASE_URL=https://sklad.example.ru python ops/create-first-admin.py
+```
+
+Утилита интерактивно запросит email, имя и пароль, создаст администратора через штатный `/api/v1/auth/bootstrap` и проверит вход. Пароль и JWT в консоль не выводятся.
+
+Для автоматизированной установки можно передать `CEH_ADMIN_EMAIL`, `CEH_ADMIN_NAME` и `CEH_ADMIN_PASSWORD`. Для локального стенда с самоподписанным сертификатом допускается `CEH_INSECURE_TLS=1`; в рабочей эксплуатации этот флаг использовать не следует.
 
 ## Smoke production
 

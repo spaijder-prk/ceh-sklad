@@ -1,0 +1,46 @@
+name: Проверка release-контрактов
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/prepare_production_env.py"
+      - "scripts/tests/**"
+      - "docker-compose.production.yml"
+      - ".github/workflows/android-release.yml"
+      - ".github/workflows/release-contract-ci.yml"
+      - "android/app/build.gradle.kts"
+  pull_request:
+    paths:
+      - "scripts/prepare_production_env.py"
+      - "scripts/tests/**"
+      - "docker-compose.production.yml"
+      - ".github/workflows/android-release.yml"
+      - ".github/workflows/release-contract-ci.yml"
+      - "android/app/build.gradle.kts"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-contracts-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: Проверить production и Android release-контракты
+    runs-on: ubuntu-latest
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+
+      - name: Установить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Проверить синтаксис
+        run: python -m compileall scripts/prepare_production_env.py scripts/tests
+
+      - name: Выполнить release-контракт тесты
+        run: python -m unittest discover -s scripts/tests -p "test_*.py" -v

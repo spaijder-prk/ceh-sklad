@@ -9,6 +9,7 @@ import androidx.room3.Query
 import androidx.room3.Room
 import androidx.room3.RoomDatabase
 import androidx.room3.Upsert
+import java.math.BigDecimal
 
 @Entity(tableName = "pending_operations")
 data class PendingOperationEntity(
@@ -33,6 +34,9 @@ interface PendingOperationDao {
     @Upsert
     suspend fun upsert(operation: PendingOperationEntity)
 
+    @Query("SELECT * FROM pending_operations ORDER BY createdAt ASC")
+    suspend fun all(): List<PendingOperationEntity>
+
     @Query(
         "SELECT * FROM pending_operations " +
             "WHERE status = 'pending' ORDER BY createdAt ASC",
@@ -56,15 +60,9 @@ interface PendingOperationDao {
 
     @Query(
         "UPDATE pending_operations SET status = 'pending', lastError = NULL " +
-            "WHERE status = 'failed'",
+            "WHERE externalId = :externalId",
     )
-    suspend fun retryFailed()
-
-    @Query("SELECT COUNT(*) FROM pending_operations WHERE status = 'pending'")
-    suspend fun pendingCount(): Int
-
-    @Query("SELECT COUNT(*) FROM pending_operations WHERE status = 'failed'")
-    suspend fun failedCount(): Int
+    suspend fun retry(externalId: String)
 }
 
 @Database(
@@ -92,4 +90,17 @@ abstract class OfflineDatabase : RoomDatabase() {
 data class QueueStats(
     val pending: Int,
     val failed: Int,
+)
+
+data class PendingOperationSummary(
+    val externalId: String,
+    val operationType: String,
+    val productId: String,
+    val quantity: BigDecimal,
+    val priceType: String?,
+    val warehouseId: String?,
+    val createdAt: Long,
+    val attempts: Int,
+    val status: String,
+    val lastError: String?,
 )

@@ -11,6 +11,8 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import java.util.concurrent.TimeUnit
 import ru.ceh.sklad.data.CehRepository
+import ru.ceh.sklad.data.QueueAuthorizationException
+import ru.ceh.sklad.data.QueueTemporaryException
 
 class PendingOperationWorker(
     appContext: Context,
@@ -21,10 +23,16 @@ class PendingOperationWorker(
         if (!repository.hasSession()) {
             return Result.success()
         }
-        return when (repository.flushPendingOperations()) {
-            FlushResult.COMPLETED -> Result.success()
-            FlushResult.RETRY_LATER -> Result.retry()
-            FlushResult.AUTH_REQUIRED -> Result.success()
+        return try {
+            when (repository.flushPendingOperations()) {
+                FlushResult.COMPLETED -> Result.success()
+                FlushResult.RETRY_LATER -> Result.retry()
+                FlushResult.AUTH_REQUIRED -> Result.success()
+            }
+        } catch (_: QueueAuthorizationException) {
+            Result.success()
+        } catch (_: QueueTemporaryException) {
+            Result.retry()
         }
     }
 

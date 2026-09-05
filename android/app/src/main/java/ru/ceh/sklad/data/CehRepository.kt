@@ -15,6 +15,7 @@ import ru.ceh.sklad.BuildConfig
 import ru.ceh.sklad.data.offline.FlushResult
 import ru.ceh.sklad.data.offline.OfflineDatabase
 import ru.ceh.sklad.data.offline.PendingOperationEntity
+import ru.ceh.sklad.data.offline.PendingOperationSummary
 import ru.ceh.sklad.data.offline.PendingOperationWorker
 import ru.ceh.sklad.data.offline.QueueStats
 
@@ -128,13 +129,24 @@ class CehRepository(context: Context) {
         schedulePendingSync()
     }
 
-    suspend fun queueStats(): QueueStats = QueueStats(
-        pending = pendingDao.pendingCount(),
-        failed = pendingDao.failedCount(),
-    )
+    suspend fun queueItems(representativeId: String): List<PendingOperationSummary> =
+        pendingDao.all().mapNotNull { operation -> operation.toSummary(representativeId) }
 
-    suspend fun retryFailedOperations() {
-        pendingDao.retryFailed()
+    suspend fun queueStats(representativeId: String): QueueStats {
+        val items = queueItems(representativeId)
+        return QueueStats(
+            pending = items.count { it.status == PendingOperationEntity.STATUS_PENDING },
+            failed = items.count { it.status == PendingOperationEntity.STATUS_FAILED },
+        )
+    }
+
+    suspend fun retryOperation(externalId: String, representativeId: String) {
+        val operation = pendingDao.all().firstOrNull { it.externalId == externalId }
+            ?: error("Операция очереди не найдена")
+        if (operation.representativeIdOrNull() != representativeId) {
+            error("Операция принадлежит другому торговому представителю")
+        }
+        pendingDao.retry(externalId)
         schedulePendingSync()
     }
 
@@ -143,7 +155,12 @@ class CehRepository(context: Context) {
     }
 
     suspend fun flushPendingOperations(): FlushResult {
+        val currentRepresentativeId = currentRepresentativeIdForQueue() ?: return FlushResult.COMPLETED
+
         for (operation in pendingDao.pending()) {
+            if (operation.representativeIdOrNull() != currentRepresentativeId) {
+                continue
+            }
             try {
                 when (operation.operationType) {
                     PendingOperationEntity.TYPE_SALE -> api.registerSale(
@@ -221,7 +238,89 @@ class CehRepository(context: Context) {
         )
     }
 
+    private suspend fun currentRepresentativeIdForQueue(): String? {
+        return try {
+            val user = api.currentUser()
+            if (user.role != ROLE_REPRESENTATIVE) {
+                null
+            } else {
+                api.representatives().firstOrNull { it.userId == user.id }?.id
+            }
+        } catch (error: HttpException) {
+            when {
+                error.code() == 401 -> throw QueueAuthorizationException()
+                error.code() == 408 || error.code() == 429 || error.code() >= 500 -> {
+                    throw QueueTemporaryException(error)
+                }
+                else -> null
+            }
+        } catch (error: IOException) {
+            throw QueueTemporaryException(error)
+        }
+    }
+
+    private fun PendingOperationEntity.representativeIdOrNull(): String? = try {
+        when (operationType) {
+            PendingOperationEntity.TYPE_SALE ->
+                gson.fromJson(payloadJson, SaleRequestDto::class.java).representativeId
+            PendingOperationEntity.TYPE_RETURN ->
+                gson.fromJson(payloadJson, ReturnRequestDto::class.java).representativeId
+            else -> null
+        }
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun PendingOperationEntity.toSummary(
+        representativeId: String,
+    ): PendingOperationSummary? {
+        return try {
+            when (operationType) {
+                PendingOperationEntity.TYPE_SALE -> {
+                    val request = gson.fromJson(payloadJson, SaleRequestDto::class.java)
+                    val line = request.lines.firstOrNull() ?: return null
+                    if (request.representativeId != representativeId) return null
+                    PendingOperationSummary(
+                        externalId = externalId,
+                        operationType = operationType,
+                        productId = line.productId,
+                        quantity = line.quantity,
+                        priceType = line.priceType,
+                        warehouseId = null,
+                        createdAt = createdAt,
+                        attempts = attempts,
+                        status = status,
+                        lastError = lastError,
+                    )
+                }
+                PendingOperationEntity.TYPE_RETURN -> {
+                    val request = gson.fromJson(payloadJson, ReturnRequestDto::class.java)
+                    val line = request.lines.firstOrNull() ?: return null
+                    if (request.representativeId != representativeId) return null
+                    PendingOperationSummary(
+                        externalId = externalId,
+                        operationType = operationType,
+                        productId = line.productId,
+                        quantity = line.quantity,
+                        priceType = null,
+                        warehouseId = request.warehouseId,
+                        createdAt = createdAt,
+                        attempts = attempts,
+                        status = status,
+                        lastError = lastError,
+                    )
+                }
+                else -> null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private companion object {
         const val ROLE_REPRESENTATIVE = "representative"
     }
 }
+
+class QueueAuthorizationException : Exception()
+class QueueTemporaryException(cause: Throwable) : Exception(cause)

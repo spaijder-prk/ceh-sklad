@@ -25,6 +25,7 @@ import ru.ceh.sklad.data.SaleRequestDto
 import ru.ceh.sklad.data.UserDto
 import ru.ceh.sklad.data.WarehouseBalanceDto
 import ru.ceh.sklad.data.WarehouseDto
+import ru.ceh.sklad.data.offline.PendingOperationSummary
 
 data class AppUiState(
     val email: String = "",
@@ -38,6 +39,7 @@ data class AppUiState(
     val debt: BigDecimal? = null,
     val documents: List<DocumentDto> = emptyList(),
     val moneyPostings: List<MoneyPostingDto> = emptyList(),
+    val offlineOperations: List<PendingOperationSummary> = emptyList(),
     val pendingOperations: Int = 0,
     val failedOperations: Int = 0,
     val realtimeActive: Boolean = false,
@@ -214,17 +216,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun retryFailedOperations() {
+    fun retryOfflineOperation(externalId: String) {
+        val representative = state.value.representative ?: return
         viewModelScope.launch {
             try {
-                repository.retryFailedOperations()
-                updateQueueStats()
+                repository.retryOperation(externalId, representative.id)
+                updateQueueState(representative.id)
                 _state.update {
-                    it.copy(operationMessage = "Ошибочные операции снова поставлены в очередь")
+                    it.copy(
+                        operationMessage = "Операция снова поставлена в очередь",
+                        operationError = null,
+                    )
                 }
             } catch (error: Throwable) {
                 _state.update {
-                    it.copy(operationError = error.message ?: "Не удалось повторить очередь")
+                    it.copy(operationError = error.message ?: "Не удалось повторить операцию")
                 }
             }
         }
@@ -254,7 +260,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun queueSale(request: SaleRequestDto) {
         try {
             repository.enqueueSale(request)
-            updateQueueStats()
+            updateQueueState(request.representativeId)
             _state.update {
                 it.copy(
                     operationLoading = false,
@@ -275,7 +281,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun queueReturn(request: ReturnRequestDto) {
         try {
             repository.enqueueReturn(request)
-            updateQueueStats()
+            updateQueueState(request.representativeId)
             _state.update {
                 it.copy(
                     operationLoading = false,
@@ -295,8 +301,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun loadDashboard() {
         val dashboard = repository.loadDashboard()
-        val queue = repository.queueStats()
-        if (queue.pending > 0) {
+        val representativeId = dashboard.representative?.id
+        val queueItems = if (representativeId == null) {
+            emptyList()
+        } else {
+            repository.queueItems(representativeId)
+        }
+        val pending = queueItems.count { it.status == "pending" }
+        val failed = queueItems.count { it.status == "failed" }
+        if (pending > 0) {
             repository.schedulePendingSync()
         }
         _state.update {
@@ -309,19 +322,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 debt = dashboard.debt,
                 documents = dashboard.documents,
                 moneyPostings = dashboard.moneyPostings,
-                pendingOperations = queue.pending,
-                failedOperations = queue.failed,
+                offlineOperations = queueItems,
+                pendingOperations = pending,
+                failedOperations = failed,
                 error = null,
             )
         }
     }
 
-    private suspend fun updateQueueStats() {
-        val queue = repository.queueStats()
+    private suspend fun updateQueueState(representativeId: String) {
+        val items = repository.queueItems(representativeId)
         _state.update {
             it.copy(
-                pendingOperations = queue.pending,
-                failedOperations = queue.failed,
+                offlineOperations = items,
+                pendingOperations = items.count { item -> item.status == "pending" },
+                failedOperations = items.count { item -> item.status == "failed" },
             )
         }
     }

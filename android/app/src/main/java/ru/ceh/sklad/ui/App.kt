@@ -51,7 +51,7 @@ fun CehApp(viewModel: AppViewModel = viewModel()) {
             DashboardScreen(
                 state = state,
                 onRefresh = { viewModel.refresh() },
-                onRetryFailed = viewModel::retryFailedOperations,
+                onRetryOffline = viewModel::retryOfflineOperation,
                 onLogout = viewModel::logout,
             )
         }
@@ -134,7 +134,7 @@ private fun LoginScreen(
 private fun DashboardScreen(
     state: AppUiState,
     onRefresh: () -> Unit,
-    onRetryFailed: () -> Unit,
+    onRetryOffline: (String) -> Unit,
     onLogout: () -> Unit,
 ) {
     Scaffold(
@@ -228,12 +228,11 @@ private fun DashboardScreen(
                 item {
                     RepresentativeOperationsPanel(state = state)
                 }
-                if (state.pendingOperations > 0 || state.failedOperations > 0) {
+                if (state.offlineOperations.isNotEmpty()) {
                     item {
-                        OfflineQueueCard(
-                            pending = state.pendingOperations,
-                            failed = state.failedOperations,
-                            onRetryFailed = onRetryFailed,
+                        OfflineQueueSection(
+                            state = state,
+                            onRetry = onRetryOffline,
                         )
                     }
                 }
@@ -284,42 +283,6 @@ private fun DashboardScreen(
                     ) { document ->
                         RepresentativeHistoryCard(document)
                     }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun OfflineQueueCard(
-    pending: Int,
-    failed: Int,
-    onRetryFailed: () -> Unit,
-) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Text("Офлайн-очередь", style = MaterialTheme.typography.titleMedium)
-            if (pending > 0) {
-                Text("Ожидают отправки: $pending")
-                Text(
-                    "Операции будут отправлены автоматически при появлении сети. Остатки изменятся только после подтверждения сервера.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            if (failed > 0) {
-                Text(
-                    "Требуют проверки: $failed",
-                    color = MaterialTheme.colorScheme.error,
-                )
-                Text(
-                    "Сервер отклонил эти операции. Обновите остатки и повторите попытку.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                OutlinedButton(onClick = onRetryFailed) {
-                    Text("Повторить ошибки")
                 }
             }
         }

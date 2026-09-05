@@ -12,6 +12,10 @@ permissions:
   contents: write
   actions: read
 
+concurrency:
+  group: android-production-release
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Собрать и опубликовать подписанный Android release

@@ -5,6 +5,7 @@
 ## CI и схема
 
 - [ ] общий CI на release commit полностью зеленый;
+- [ ] workflow `Проверка release-контрактов` зеленый для актуального release-контура;
 - [ ] SHA release commit зафиксирован: `________________`;
 - [ ] номер/ссылка полного CI зафиксированы: `________________`;
 - [ ] Alembic revision зафиксирована: `________________`;
@@ -36,19 +37,26 @@
 
 ## Android
 
-- [ ] release keystore secrets настроены в GitHub Actions;
+- [ ] production signing key создан один раз и сохранен в защищенной офлайн-копии вместе с backup-параметрами;
+- [ ] четыре `CEH_ANDROID_*` release secrets настроены в GitHub Actions;
+- [ ] workflow `Подписанный Android release` запущен с текущего HEAD `main` после зеленого общего CI;
 - [ ] workflow `Подписанный Android release` успешен;
-- [ ] `apksigner verify` успешен;
-- [ ] artifact содержит `app-release.apk` и `android-release-manifest.json`;
+- [ ] GitHub Release имеет уникальный tag `android-v<versionName>`;
+- [ ] Release содержит `ceh-sklad-<version>.apk`, `ceh-sklad-<version>.aab`, `android-release-manifest.json` и `SHA256SUMS.txt`;
+- [ ] встроенная перепроверка `scripts/verify_android_release.py` внутри workflow успешна;
+- [ ] после скачивания Release отдельно выполнен `scripts/verify_android_release.py`;
 - [ ] SHA-256 APK совпадает с `artifact_sha256` в manifest;
-- [ ] SHA-256 сертификата из независимого `apksigner verify --print-certs` совпадает с `signer_certificate_sha256`;
+- [ ] SHA256SUMS подтверждает APK, AAB и manifest;
+- [ ] SHA-256 сертификата из `apksigner --print-certs` совпадает с `signer_certificate_sha256`;
+- [ ] подпись AAB успешно проверена `jarsigner`;
 - [ ] `application_id=ru.ceh.sklad`, `versionCode` и `versionName` в manifest ожидаемые;
 - [ ] `api_base_url` в manifest — фактический production HTTPS origin;
 - [ ] `source_commit` в manifest совпадает с release commit;
 - [ ] workflow `Android инструментальные smoke-тесты` успешен на эмуляторе;
 - [ ] просмотрен artifact `ceh-sklad-android-smoke`: JUnit/HTML, logcat, screenshot и package dump;
 - [ ] проверена установка/обновление подписанного APK на целевом устройстве;
-- [ ] торговый представитель выполнил login/остатки/продажу/возврат/сдачу денег/offline queue на целевом устройстве.
+- [ ] торговый представитель выполнил login/остатки/продажу/возврат/сдачу денег/offline queue на целевом устройстве;
+- [ ] подтверждено, что signing key не будет ротироваться между обычными обновлениями приложения.
 
 ## Staging и нагрузка
 
@@ -100,5 +108,5 @@
 - [ ] выполнен отдельный restore test из актуального production-compatible backup;
 - [ ] определена процедура отката backend/web и восстановления БД;
 - [ ] зафиксирована процедура доставки следующего Android-релиза и сохранен signer certificate fingerprint;
-- [ ] ссылки на CI, staging preflight, Android release/smoke artifacts, metadata snapshot/mapping SHA-256 и UAT-протокол собраны в одном release record;
-- [ ] PR переведен из draft только после завершения всех обязательных пунктов выше.
+- [ ] ссылки на CI, staging preflight, Android release/smoke assets, metadata snapshot/mapping SHA-256 и UAT-протокол собраны в одном release record;
+- [ ] issues #7 и #8 закрыты только после фактического production deployment, физического Android UAT и UAT с реальным tenant УНФ.

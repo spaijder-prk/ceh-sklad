@@ -15,6 +15,7 @@ class AndroidReleaseContractTests(unittest.TestCase):
 
         required_fragments = (
             "permissions:\n  contents: write\n  actions: read",
+            "concurrency:\n  group: android-production-release\n  cancel-in-progress: false",
             "actions/setup-python@v5",
             'python-version: "3.12"',
             "refs/heads/main",

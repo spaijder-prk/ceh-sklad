@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "scripts/android_release_manifest.py"
+      - "scripts/prepare_android_signing.py"
       - "scripts/prepare_production_env.py"
       - "scripts/verify_android_release.py"
       - "scripts/tests/**"
@@ -15,6 +16,7 @@ on:
   pull_request:
     paths:
       - "scripts/android_release_manifest.py"
+      - "scripts/prepare_android_signing.py"
       - "scripts/prepare_production_env.py"
       - "scripts/verify_android_release.py"
       - "scripts/tests/**"
@@ -43,13 +45,63 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Установить Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: Проверить синтаксис
         run: >-
           python -m compileall
           scripts/android_release_manifest.py
+          scripts/prepare_android_signing.py
           scripts/prepare_production_env.py
           scripts/verify_android_release.py
           scripts/tests
 
       - name: Выполнить release-контракт тесты
         run: python -m unittest discover -s scripts/tests -p "test_*.py" -v
+
+      - name: Проверить реальное создание PKCS12
+        env:
+          SIGNING_DIR: ${{ runner.temp }}/ceh-signing-smoke
+        run: |
+          set -Eeuo pipefail
+          python scripts/prepare_android_signing.py \
+            --output-dir "$SIGNING_DIR" \
+            --alias ceh-sklad-ci \
+            --dname "CN=Цех Склад CI" \
+            --validity-days 9125
+          python - "$SIGNING_DIR" <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          backup = json.loads((root / "ceh-sklad-signing-backup.json").read_text(encoding="utf-8"))
+          env = os.environ.copy()
+          env["CEH_SIGNING_SMOKE_PASSWORD"] = backup["keystore_password"]
+          subprocess.run(
+              [
+                  "keytool",
+                  "-list",
+                  "-keystore",
+                  str(root / backup["keystore_file"]),
+                  "-storepass:env",
+                  "CEH_SIGNING_SMOKE_PASSWORD",
+                  "-alias",
+                  backup["key_alias"],
+              ],
+              check=True,
+              env=env,
+              stdout=subprocess.DEVNULL,
+              stderr=subprocess.DEVNULL,
+          )
+          PY
+
+      - name: Удалить временный signing material
+        if: ${{ always() }}
+        run: rm -rf "${{ runner.temp }}/ceh-signing-smoke"

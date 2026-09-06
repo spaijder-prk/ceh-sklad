@@ -1,0 +1,113 @@
+name: Обновление lock-файлов
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "admin-web/package.json"
+      - "backend/pyproject.toml"
+      - "unf-bridge/pyproject.toml"
+      - "android/build.gradle.kts"
+      - "android/app/build.gradle.kts"
+      - "android/settings.gradle.kts"
+      - ".github/workflows/dependency-snapshot.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dependency-snapshot-main
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    name: Зафиксировать npm, Python и Gradle toolchain
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Установить Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Сформировать package-lock
+        working-directory: admin-web
+        run: npm install --package-lock-only --ignore-scripts
+
+      - name: Установить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Зафиксировать backend Python зависимости
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python -m venv "$RUNNER_TEMP/backend-lock"
+          "$RUNNER_TEMP/backend-lock/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/backend-lock/bin/pip" install -e './backend[dev]'
+          "$RUNNER_TEMP/backend-lock/bin/pip" freeze --exclude-editable | LC_ALL=C sort > backend/requirements.lock
+
+      - name: Зафиксировать УНФ bridge Python зависимости
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python -m venv "$RUNNER_TEMP/unf-lock"
+          "$RUNNER_TEMP/unf-lock/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/unf-lock/bin/pip" install -e './unf-bridge[dev]'
+          "$RUNNER_TEMP/unf-lock/bin/pip" freeze --exclude-editable | LC_ALL=C sort > unf-bridge/requirements.lock
+
+      - name: Установить Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Установить Gradle для bootstrap wrapper
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Сформировать Gradle Wrapper с checksum
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          gradle -p android wrapper --gradle-version 8.11.1 --distribution-type bin
+          SHA256="$(curl --fail --silent --show-error --location https://services.gradle.org/distributions/gradle-8.11.1-bin.zip.sha256)"
+          test "${#SHA256}" -eq 64
+          PROPERTIES=android/gradle/wrapper/gradle-wrapper.properties
+          sed -i '/^distributionSha256Sum=/d' "$PROPERTIES"
+          printf '\ndistributionSha256Sum=%s\n' "$SHA256" >> "$PROPERTIES"
+
+      - name: Проверить созданные lock-файлы и wrapper
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s admin-web/package-lock.json
+          test -s backend/requirements.lock
+          test -s unf-bridge/requirements.lock
+          test -s android/gradlew
+          test -s android/gradle/wrapper/gradle-wrapper.jar
+          grep -q '^distributionSha256Sum=' android/gradle/wrapper/gradle-wrapper.properties
+          (cd admin-web && npm ci --ignore-scripts)
+          ./android/gradlew -p android --version
+
+      - name: Зафиксировать снимок зависимостей в main
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git add admin-web/package-lock.json backend/requirements.lock unf-bridge/requirements.lock android/gradlew android/gradlew.bat android/gradle/wrapper
+          if git diff --cached --quiet; then
+            echo "Lock-файлы уже актуальны."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Обновить lock-файлы и Gradle Wrapper"
+          git push origin HEAD:main

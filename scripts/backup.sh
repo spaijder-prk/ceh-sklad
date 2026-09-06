@@ -26,13 +26,6 @@ else
   fi
 fi
 
-if [ -n "$ENV_FILE" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  . "./$ENV_FILE"
-  set +a
-fi
-
 compose() {
   if [ -n "$ENV_FILE" ]; then
     docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
@@ -46,10 +39,7 @@ mkdir -p backups
 STAMP=$(date +%Y%m%d_%H%M%S)
 FILE="backups/ceh_sklad_${STAMP}.dump"
 
-compose exec -T db pg_dump \
-  -U "${POSTGRES_USER:-ceh}" \
-  -d "${POSTGRES_DB:-ceh_sklad}" \
-  -Fc > "$FILE"
+compose exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$FILE"
 
 if [ ! -s "$FILE" ]; then
   rm -f "$FILE"

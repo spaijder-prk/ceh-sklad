@@ -16,16 +16,21 @@ class BackupRestoreContractTests(unittest.TestCase):
         self.assertIn("docker-compose.production.yml", script)
         self.assertIn("umask 077", script)
         self.assertIn('docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE"', script)
+        self.assertIn('pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc', script)
+        self.assertNotIn("set -a", script)
+        self.assertNotIn('. "./$ENV_FILE"', script)
 
-    def test_restore_supports_same_production_context(self) -> None:
+    def test_restore_supports_same_production_context_without_sourcing_env(self) -> None:
         script = RESTORE.read_text(encoding="utf-8")
         self.assertIn("--production", script)
         self.assertIn(".env.production", script)
         self.assertIn("docker-compose.production.yml", script)
         self.assertIn('docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE"', script)
-        self.assertIn("pg_restore", script)
+        self.assertIn('pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB"', script)
         self.assertIn("stop backend", script)
         self.assertIn("start backend", script)
+        self.assertNotIn("set -a", script)
+        self.assertNotIn('. "./$ENV_FILE"', script)
 
 
 if __name__ == "__main__":

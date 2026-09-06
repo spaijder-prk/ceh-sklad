@@ -37,13 +37,6 @@ else
   fi
 fi
 
-if [ -n "$ENV_FILE" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  . "./$ENV_FILE"
-  set +a
-fi
-
 compose() {
   if [ -n "$ENV_FILE" ]; then
     docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
@@ -61,10 +54,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-cat "$FILE" | compose exec -T db pg_restore \
-  -U "${POSTGRES_USER:-ceh}" \
-  -d "${POSTGRES_DB:-ceh_sklad}" \
-  --clean --if-exists --no-owner
+compose exec -T db sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner' < "$FILE"
 
 compose start backend
 trap - EXIT INT TERM

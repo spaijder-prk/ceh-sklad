@@ -218,6 +218,7 @@ jobs:
             --apk "$RELEASE_DIR/ceh-sklad-${VERSION_NAME}.apk" \
             --aab "$RELEASE_DIR/ceh-sklad-${VERSION_NAME}.aab" \
             --manifest "$RELEASE_DIR/android-release-manifest.json" \
+            --ca-cert "$RELEASE_DIR/ceh-sklad-root-ca.crt" \
             --checksums "$RELEASE_DIR/SHA256SUMS.txt" \
             --apksigner "$APKSIGNER" \
             --expected-api-base-url "$API_BASE_URL" \

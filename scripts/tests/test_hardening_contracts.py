@@ -77,6 +77,14 @@ class HardeningContractsTest(unittest.TestCase):
         self.assertNotIn('gradle-version: "8.9"', instrumented)
         self.assertIn("api-level: 36", instrumented)
 
+    def test_dependabot_keeps_android_version_updates_frozen_for_0_4_0(self):
+        dependabot = (ROOT / ".github/dependabot.yml").read_text(encoding="utf-8")
+        gradle_block = dependabot.split("  - package-ecosystem: gradle", maxsplit=1)[1]
+
+        self.assertIn("directory: /android", gradle_block)
+        self.assertIn("open-pull-requests-limit: 0", gradle_block)
+        self.assertNotIn("version-update:semver-", gradle_block)
+
     def test_main_ruleset_requires_pr_and_both_ci_checks(self):
         ruleset = json.loads((ROOT / ".github/rulesets/main.json").read_text(encoding="utf-8"))
         types = {rule["type"] for rule in ruleset["rules"]}

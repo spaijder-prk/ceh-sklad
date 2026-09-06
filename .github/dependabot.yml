@@ -34,8 +34,5 @@ updates:
       day: monday
       time: "05:00"
       timezone: Europe/Berlin
-    open-pull-requests-limit: 3
-    ignore:
-      - dependency-name: "*"
-        update-types:
-          - version-update:semver-major
+    # До выпуска 0.4.0 обычные version updates заморожены; security updates остаются активными.
+    open-pull-requests-limit: 0

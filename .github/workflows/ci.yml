@@ -19,20 +19,27 @@ jobs:
     outputs:
       run_android: ${{ steps.diff.outputs.run_android }}
     steps:
-      - name: Получить head commit
+      - name: Получить полный диапазон изменений
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 2
-      - name: Проверить Android-изменения
+          fetch-depth: 0
+      - name: Проверить Android-изменения во всем диапазоне
         id: diff
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
+          set -Eeuo pipefail
+          HEAD_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE_SHA="${{ github.event.before }}"
+          fi
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
             echo "run_android=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if git diff --quiet HEAD^ HEAD -- android .github/workflows/ci.yml; then
+          if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- android .github/workflows/ci.yml; then
             echo "run_android=false" >> "$GITHUB_OUTPUT"
           else
             echo "run_android=true" >> "$GITHUB_OUTPUT"

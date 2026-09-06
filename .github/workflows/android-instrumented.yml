@@ -16,25 +16,28 @@ concurrency:
 
 jobs:
   changes:
-    name: Проверить последний Android commit
+    name: Проверить Android-изменения во всем PR
     runs-on: ubuntu-latest
     outputs:
       run_smoke: ${{ steps.diff.outputs.run_smoke }}
     steps:
-      - name: Получить head PR
+      - name: Получить полный диапазон изменений
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 2
+          fetch-depth: 0
       - name: Определить необходимость эмулятора
         id: diff
         shell: bash
         run: |
+          set -Eeuo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "run_smoke=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if git diff --quiet HEAD^ HEAD -- android .github/workflows/android-instrumented.yml; then
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- android .github/workflows/android-instrumented.yml; then
             echo "run_smoke=false" >> "$GITHUB_OUTPUT"
           else
             echo "run_smoke=true" >> "$GITHUB_OUTPUT"

@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import re
+import socket
 import stat
 import subprocess
 import sys
@@ -57,6 +58,17 @@ def validate_domain(value: str) -> str:
     ):
         raise RuntimeError("CEH_DOMAIN не должен быть тестовым или localhost-доменом")
     return domain
+
+
+def resolve_domain(domain: str) -> tuple[str, ...]:
+    try:
+        records = socket.getaddrinfo(domain, 443, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise RuntimeError(f"DNS для {domain} не разрешается: {exc}") from exc
+    addresses = sorted({str(record[4][0]) for record in records if record[4]})
+    if not addresses:
+        raise RuntimeError(f"DNS для {domain} не вернул ни одного IP-адреса")
+    return tuple(addresses)
 
 
 def compose_command(*args: str) -> list[str]:
@@ -140,7 +152,12 @@ def wait_for_readiness(domain: str, expected_version: str, timeout: float) -> di
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Безопасно обновить production-контур Цех Склад и дождаться HTTPS readiness"
+        description="Безопасно проверить или обновить production-контур Цех Склад"
+    )
+    parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Только проверить env, DNS, Docker daemon и Compose без backup/build/запуска",
     )
     parser.add_argument(
         "--skip-backup",
@@ -184,29 +201,41 @@ def main() -> int:
         if not expected_version:
             raise RuntimeError("VERSION пуст")
 
-        print("1/5 Проверяю Docker Compose...")
+        print("1/6 Проверяю Docker daemon и Compose...")
+        run_command(["docker", "info", "--format", "{{.ServerVersion}}"], capture=True)
         run_command(["docker", "compose", "version"])
         run_command(compose_command("config", "--quiet"))
 
+        print("2/6 Проверяю DNS рабочего домена...")
+        addresses = resolve_domain(domain)
+        print(f"DNS {domain}: {', '.join(addresses)}")
+
+        if args.check_only:
+            print(
+                "Preflight сервера успешен: env/права, Docker daemon, Compose и DNS готовы. "
+                "Контейнеры и данные не изменялись."
+            )
+            return 0
+
         services = running_services()
         if "db" in services and not args.skip_backup:
-            print("2/5 БД уже работает: создаю резервную копию перед обновлением...")
+            print("3/6 БД уже работает: создаю резервную копию перед обновлением...")
             make_backup()
         elif "db" in services:
-            print("2/5 БД уже работает: backup пропущен по --skip-backup.")
+            print("3/6 БД уже работает: backup пропущен по --skip-backup.")
         else:
-            print("2/5 Первый запуск: работающей БД нет, предварительный backup не требуется.")
+            print("3/6 Первый запуск: работающей БД нет, предварительный backup не требуется.")
 
-        print("3/5 Поднимаю production-контур...")
+        print("4/6 Поднимаю production-контур...")
         up_args = ["up", "-d"]
         if not args.no_build:
             up_args.append("--build")
         run_command(compose_command(*up_args))
 
-        print("4/5 Ожидаю внешний HTTPS health/readiness...")
+        print("5/6 Ожидаю внешний HTTPS health/readiness...")
         ready = wait_for_readiness(domain, expected_version, args.timeout)
 
-        print("5/5 Проверяю состояние контейнеров...")
+        print("6/6 Проверяю состояние контейнеров...")
         run_command(compose_command("ps"))
         print(
             "Production готов: "

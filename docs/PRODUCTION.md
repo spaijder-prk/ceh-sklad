@@ -62,9 +62,17 @@ BOOTSTRAP_ADMIN_PASSWORD=<уникальный сложный пароль>
 
 При `ENVIRONMENT=production` backend дополнительно откажется запускаться с дефолтным JWT-секретом, стандартным bootstrap-паролем, тестовым ключом 1С или HTTP-адресом в CORS. Production Compose требует критичные переменные еще до запуска контейнеров.
 
-## Проверка конфигурации
+## Проверка сервера без изменений
 
-Перед запуском проверьте итоговый Compose:
+Перед первым запуском или обновлением рекомендуется выполнить read-only preflight:
+
+```bash
+python scripts/deploy_production.py --check-only
+```
+
+Команда проверяет права `.env.production`, рабочий DNS-домен, доступность Docker daemon, Docker Compose и итоговый production Compose. Backup, build, запуск и остановка контейнеров в этом режиме не выполняются.
+
+Для ручной диагностики итоговый Compose можно проверить отдельно:
 
 ```bash
 docker compose --env-file .env.production -f docker-compose.production.yml config
@@ -72,7 +80,17 @@ docker compose --env-file .env.production -f docker-compose.production.yml confi
 
 В выводе не должно быть внешних `ports` у `db` и `backend`.
 
-## Первый запуск
+## Первый запуск и обновление
+
+Рекомендуемый способ — единая команда deployment:
+
+```bash
+python scripts/deploy_production.py
+```
+
+При обновлении работающей установки она автоматически делает production-backup БД, затем собирает/поднимает контейнеры и ждёт успешные внешние HTTPS `/health` и `/health/ready` с версией из `VERSION`. Для первого запуска backup не требуется.
+
+При необходимости ручного запуска эквивалентная базовая команда:
 
 ```bash
 docker compose --env-file .env.production -f docker-compose.production.yml up -d --build
@@ -105,7 +123,7 @@ Web-панель при production Docker build получает `VITE_API_BASE_
 ## База данных и резервные копии
 
 - PostgreSQL хранится в volume `ceh_postgres` и не публикует порт наружу.
-- Перед обновлением выполняйте резервную копию по `docs/BACKUP.md`.
+- Перед обновлением выполняйте резервную копию по `docs/BACKUP.md`; `deploy_production.py` делает её автоматически для уже работающей БД.
 - CI создает custom-format dump, восстанавливает его в отдельную БД и проверяет Alembic revision и наличие актуальных колонок схемы.
 - Для реального восстановления используйте отдельное окно обслуживания и после restore снова выполните `alembic upgrade head`.
 

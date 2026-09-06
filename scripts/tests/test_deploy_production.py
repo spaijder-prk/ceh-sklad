@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import socket
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,6 +34,25 @@ class DeployProductionTests(unittest.TestCase):
         for value in ("localhost", "https://sklad.example.org", "ci.invalid", "example.com"):
             with self.subTest(value=value), self.assertRaises(RuntimeError):
                 module.validate_domain(value)
+
+    def test_resolve_domain_returns_unique_addresses(self) -> None:
+        records = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("203.0.113.10", 443)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("203.0.113.10", 443)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:db8::10", 443, 0, 0)),
+        ]
+        with mock.patch.object(module.socket, "getaddrinfo", return_value=records):
+            addresses = module.resolve_domain("sklad.example.org")
+        self.assertEqual(addresses, ("2001:db8::10", "203.0.113.10"))
+
+    def test_resolve_domain_rejects_dns_failure(self) -> None:
+        with mock.patch.object(
+            module.socket,
+            "getaddrinfo",
+            side_effect=socket.gaierror(-2, "Name or service not known"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "DNS"):
+                module.resolve_domain("sklad.example.org")
 
     def test_compose_command_is_pinned_to_production_files(self) -> None:
         self.assertEqual(

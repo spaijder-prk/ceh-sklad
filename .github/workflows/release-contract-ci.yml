@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
     paths:
+      - "VERSION"
+      - "backend/pyproject.toml"
+      - "backend/app/main.py"
+      - "backend/app/version.py"
+      - "admin-web/package.json"
       - "scripts/android_release_manifest.py"
       - "scripts/prepare_android_signing.py"
       - "scripts/prepare_production_env.py"
@@ -15,6 +20,11 @@ on:
       - "android/app/build.gradle.kts"
   pull_request:
     paths:
+      - "VERSION"
+      - "backend/pyproject.toml"
+      - "backend/app/main.py"
+      - "backend/app/version.py"
+      - "admin-web/package.json"
       - "scripts/android_release_manifest.py"
       - "scripts/prepare_android_signing.py"
       - "scripts/prepare_production_env.py"
@@ -54,6 +64,7 @@ jobs:
       - name: Проверить синтаксис
         run: >-
           python -m compileall
+          backend/app/version.py
           scripts/android_release_manifest.py
           scripts/prepare_android_signing.py
           scripts/prepare_production_env.py

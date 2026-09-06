@@ -19,6 +19,7 @@ from .login_retry_after import LoginRetryAfterMiddleware
 from .reporting import router as reporting_router
 from .system_status import router as system_status_router
 from .unf_cloud import router as unf_cloud_router
+from .version import APP_VERSION
 
 
 @asynccontextmanager
@@ -29,7 +30,7 @@ async def lifespan(_: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title=settings.app_name, version="0.15.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version=APP_VERSION, lifespan=lifespan)
 app.middleware("http")(audit_mutations)
 app.add_middleware(
     CORSMiddleware,
@@ -54,7 +55,7 @@ app.include_router(admin_catalog_router)
 @app.get("/health")
 async def health() -> dict[str, str]:
     """Liveness: процесс FastAPI запущен и может отвечать на HTTP."""
-    return {"status": "ok"}
+    return {"status": "ok", "version": APP_VERSION}
 
 
 @app.get("/health/ready")
@@ -80,4 +81,5 @@ async def readiness() -> dict[str, str]:
         "status": "ready",
         "database": "ok",
         "schema_revision": str(revision),
+        "version": APP_VERSION,
     }

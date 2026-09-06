@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
-import re
-import socket
 import stat
 import subprocess
 import sys
@@ -15,9 +14,6 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DOMAIN_RE = re.compile(
-    r"^(?=.{4,253}$)(?!-)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$"
-)
 
 
 def parse_env_file(path: Path) -> dict[str, str]:
@@ -49,26 +45,63 @@ def validate_env_permissions(path: Path) -> None:
         )
 
 
-def validate_domain(value: str) -> str:
-    domain = value.strip().lower().rstrip(".")
-    if not DOMAIN_RE.fullmatch(domain):
-        raise RuntimeError("CEH_DOMAIN должен быть полноценным DNS-именем")
-    if domain in {"localhost", "example.com", "example.ru"} or domain.endswith(
-        (".invalid", ".localhost", ".example")
-    ):
-        raise RuntimeError("CEH_DOMAIN не должен быть тестовым или localhost-доменом")
-    return domain
-
-
-def resolve_domain(domain: str) -> tuple[str, ...]:
+def validate_public_ip(value: str) -> str:
+    raw = value.strip()
+    if raw.startswith("[") and raw.endswith("]"):
+        raw = raw[1:-1]
     try:
-        records = socket.getaddrinfo(domain, 443, type=socket.SOCK_STREAM)
-    except socket.gaierror as exc:
-        raise RuntimeError(f"DNS для {domain} не разрешается: {exc}") from exc
-    addresses = sorted({str(record[4][0]) for record in records if record[4]})
-    if not addresses:
-        raise RuntimeError(f"DNS для {domain} не вернул ни одного IP-адреса")
-    return tuple(addresses)
+        address = ipaddress.ip_address(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"CEH_PUBLIC_IP должен быть корректным IPv4/IPv6 адресом: {exc}") from exc
+    if not address.is_global:
+        raise RuntimeError("CEH_PUBLIC_IP должен быть публичным глобально маршрутизируемым адресом")
+    return address.compressed
+
+
+def validate_public_port(value: str) -> int:
+    try:
+        port = int(value)
+    except ValueError as exc:
+        raise RuntimeError("CEH_PUBLIC_PORT должен быть целым числом") from exc
+    if port < 1 or port > 65535:
+        raise RuntimeError("CEH_PUBLIC_PORT должен быть в диапазоне 1..65535")
+    if port == 80:
+        raise RuntimeError("CEH_PUBLIC_PORT=80 запрещён: TCP 80 нужен для ACME HTTP-01")
+    return port
+
+
+def public_host(ip: str) -> str:
+    address = ipaddress.ip_address(ip)
+    return f"[{address.compressed}]" if address.version == 6 else address.compressed
+
+
+def public_origins(ip: str, port: int) -> tuple[str, str]:
+    host = public_host(ip)
+    suffix = "" if port == 443 else f":{port}"
+    return f"https://{host}{suffix}", f"wss://{host}{suffix}"
+
+
+def validate_public_endpoint(env_values: dict[str, str]) -> tuple[str, int, str]:
+    ip = validate_public_ip(env_values.get("CEH_PUBLIC_IP", ""))
+    port = validate_public_port(env_values.get("CEH_PUBLIC_PORT", ""))
+    expected_host = public_host(ip)
+    expected_origin, expected_ws_origin = public_origins(ip, port)
+
+    actual_host = env_values.get("CEH_PUBLIC_HOST", "")
+    actual_origin = env_values.get("CEH_PUBLIC_ORIGIN", "").rstrip("/")
+    actual_ws_origin = env_values.get("CEH_PUBLIC_WS_ORIGIN", "").rstrip("/")
+    if actual_host != expected_host:
+        raise RuntimeError(f"CEH_PUBLIC_HOST не совпадает с IP: {actual_host!r} != {expected_host!r}")
+    if actual_origin != expected_origin:
+        raise RuntimeError(
+            f"CEH_PUBLIC_ORIGIN не совпадает с IP/портом: {actual_origin!r} != {expected_origin!r}"
+        )
+    if actual_ws_origin != expected_ws_origin:
+        raise RuntimeError(
+            "CEH_PUBLIC_WS_ORIGIN не совпадает с IP/портом: "
+            f"{actual_ws_origin!r} != {expected_ws_origin!r}"
+        )
+    return ip, port, expected_origin
 
 
 def compose_command(*args: str) -> list[str]:
@@ -111,17 +144,17 @@ def make_backup() -> None:
 
 def _get_json(url: str, timeout: float) -> dict[str, object]:
     request = Request(url, headers={"Accept": "application/json", "User-Agent": "ceh-sklad-deploy/0.4"})
-    with urlopen(request, timeout=timeout) as response:  # noqa: S310 - URL собран из проверенного CEH_DOMAIN
+    with urlopen(request, timeout=timeout) as response:  # noqa: S310 - URL собран из проверенного public IP/port
         payload = json.load(response)
     if not isinstance(payload, dict):
         raise RuntimeError(f"{url} вернул не JSON-объект")
     return payload
 
 
-def wait_for_readiness(domain: str, expected_version: str, timeout: float) -> dict[str, object]:
+def wait_for_readiness(base_url: str, expected_version: str, timeout: float) -> dict[str, object]:
     deadline = time.monotonic() + timeout
     last_error: Exception | None = None
-    base_url = f"https://{domain}"
+    base_url = base_url.rstrip("/")
 
     while time.monotonic() < deadline:
         try:
@@ -152,12 +185,12 @@ def wait_for_readiness(domain: str, expected_version: str, timeout: float) -> di
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Безопасно проверить или обновить production-контур Цех Склад"
+        description="Безопасно проверить или обновить production-контур Цех Склад по IP и порту"
     )
     parser.add_argument(
         "--check-only",
         action="store_true",
-        help="Только проверить env, DNS, Docker daemon и Compose без backup/build/запуска",
+        help="Только проверить env, endpoint, Docker daemon и Compose без backup/build/запуска",
     )
     parser.add_argument(
         "--skip-backup",
@@ -196,7 +229,7 @@ def main() -> int:
     try:
         validate_env_permissions(env_path)
         env_values = parse_env_file(env_path)
-        domain = validate_domain(env_values.get("CEH_DOMAIN", ""))
+        ip, port, base_url = validate_public_endpoint(env_values)
         expected_version = version_path.read_text(encoding="utf-8").strip()
         if not expected_version:
             raise RuntimeError("VERSION пуст")
@@ -206,14 +239,14 @@ def main() -> int:
         run_command(["docker", "compose", "version"])
         run_command(compose_command("config", "--quiet"))
 
-        print("2/6 Проверяю DNS рабочего домена...")
-        addresses = resolve_domain(domain)
-        print(f"DNS {domain}: {', '.join(addresses)}")
+        print("2/6 Проверяю production endpoint IP:port...")
+        print(f"Endpoint: {base_url} (IP={ip}, HTTPS port={port})")
+        print("Для выдачи и автоматического продления IP-сертификата TCP 80 должен быть доступен Caddy извне.")
 
         if args.check_only:
             print(
-                "Preflight сервера успешен: env/права, Docker daemon, Compose и DNS готовы. "
-                "Контейнеры и данные не изменялись."
+                "Preflight сервера успешен: env/права, public IP/port, Docker daemon и Compose готовы. "
+                "Контейнеры и данные не изменялись. Внешнюю доступность TCP 80 проверьте с другой сети."
             )
             return 0
 
@@ -233,13 +266,13 @@ def main() -> int:
         run_command(compose_command(*up_args))
 
         print("5/6 Ожидаю внешний HTTPS health/readiness...")
-        ready = wait_for_readiness(domain, expected_version, args.timeout)
+        ready = wait_for_readiness(base_url, expected_version, args.timeout)
 
         print("6/6 Проверяю состояние контейнеров...")
         run_command(compose_command("ps"))
         print(
             "Production готов: "
-            f"https://{domain}, version={expected_version}, schema={ready.get('schema_revision')}"
+            f"{base_url}, version={expected_version}, schema={ready.get('schema_revision')}"
         )
         print(
             "Следующий шаг: войти bootstrap-администратором, сменить пароль, подтвердить "

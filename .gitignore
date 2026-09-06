@@ -2,17 +2,50 @@
 .env.*
 !.env.example
 !.env.production.example
+
+# Ключи, сертификаты и подписанные артефакты
 *.keystore
 *.jks
+*.p12
+*.pfx
+*.pem
+*.key
+*.apk
+*.aab
+
+# Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 .venv/
+
+# Node / frontend / E2E
 node_modules/
 dist/
+playwright-report/
+test-results/
+
+# Android / Gradle / IDE
 .gradle/
 .idea/
+.vscode/
 *.iml
 local.properties
 build/
+
+# Эксплуатационные данные и отчеты
 backups/
+reports/
+artifacts/
+*.log
+unf-bridge/unf-tenant.json
+
+# ОС
+.DS_Store
+Thumbs.db

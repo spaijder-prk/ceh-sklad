@@ -197,6 +197,10 @@ jobs:
     steps:
       - name: Получить код
         uses: actions/checkout@v4
+      - name: Проверить локальный Compose первого запуска
+        run: docker compose config > /tmp/ceh-local-compose.yml
+      - name: Собрать development web-контейнер
+        run: docker build -f admin-web/Dockerfile.dev -t ceh-sklad-admin-web-dev-ci ./admin-web
       - name: Проверить итоговую production-конфигурацию
         run: docker compose -f docker-compose.production.yml config > /tmp/ceh-production-compose.yml
       - name: Проверить Caddyfile

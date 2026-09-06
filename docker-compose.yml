@@ -1,3 +1,5 @@
+name: ceh-sklad-dev
+
 services:
   db:
     image: postgres:17
@@ -26,9 +28,25 @@ services:
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-change-me}
       INTEGRATION_1C_API_KEY: ${INTEGRATION_1C_API_KEY:-change-me-1c}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3).read()"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
     depends_on:
       db:
+        condition: service_healthy
+
+  admin-web:
+    build:
+      context: ./admin-web
+      dockerfile: Dockerfile.dev
+    ports:
+      - "127.0.0.1:5173:5173"
+    depends_on:
+      backend:
         condition: service_healthy
 
 volumes:

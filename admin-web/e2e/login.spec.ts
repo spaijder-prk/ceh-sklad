@@ -61,9 +61,11 @@ test('администратор входит через cookie-сессию б�
 
   await expect(page.getByText('Панель администратора')).toBeVisible()
   expect(await page.evaluate(() => localStorage.getItem('ceh-token'))).toBeNull()
-  await expect.poll(() => websocketUrls.length).toBeGreaterThan(0)
-  expect(websocketUrls[0]).toBe('ws://localhost:8000/api/v1/realtime')
-  expect(websocketUrls[0]).not.toContain('token=')
+
+  await expect.poll(() => websocketUrls.filter((url) => url.includes('/api/v1/realtime')).length).toBeGreaterThan(0)
+  const applicationWebSocket = websocketUrls.find((url) => url.includes('/api/v1/realtime'))
+  expect(applicationWebSocket).toBe('ws://localhost:8000/api/v1/realtime')
+  expect(applicationWebSocket).not.toContain('token=')
 
   await page.getByRole('button', { name: 'Выйти' }).click()
   await expect(page.getByRole('button', { name: 'Войти' })).toBeVisible()

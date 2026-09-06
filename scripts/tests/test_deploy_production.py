@@ -106,7 +106,7 @@ class DeployProductionTests(unittest.TestCase):
             path.chmod(0o600)
             module.validate_env_permissions(path)
 
-    def test_wait_for_readiness_checks_version_and_schema(self) -> None:
+    def test_wait_for_readiness_uses_local_tls_and_checks_version_schema(self) -> None:
         responses = [
             {"status": "ok", "version": "0.4.0"},
             {
@@ -117,12 +117,14 @@ class DeployProductionTests(unittest.TestCase):
             },
         ]
         with mock.patch.object(module.ssl, "create_default_context", return_value=object()), mock.patch.object(
-            module, "_get_json", side_effect=responses
-        ):
+            module, "_get_json_local_tls", side_effect=responses
+        ) as getter:
             ready = module.wait_for_readiness(
                 "https://93.184.216.34:40443", "0.4.0", 1.0, "TEST ROOT CA"
             )
         self.assertEqual(ready["schema_revision"], "20260904_09")
+        self.assertEqual(getter.call_args_list[0].args[0], "https://93.184.216.34:40443")
+        self.assertEqual(getter.call_args_list[0].args[1], "/health")
 
     def test_wait_for_readiness_reports_database_state(self) -> None:
         responses = [
@@ -135,7 +137,7 @@ class DeployProductionTests(unittest.TestCase):
             },
         ]
         with mock.patch.object(module.ssl, "create_default_context", return_value=object()), mock.patch.object(
-            module, "_get_json", side_effect=responses
+            module, "_get_json_local_tls", side_effect=responses
         ), mock.patch.object(module.time, "sleep", return_value=None), mock.patch.object(
             module.time, "monotonic", side_effect=[0.0, 0.0, 2.0]
         ):
@@ -155,7 +157,7 @@ class DeployProductionTests(unittest.TestCase):
             },
         ]
         with mock.patch.object(module.ssl, "create_default_context", return_value=object()), mock.patch.object(
-            module, "_get_json", side_effect=responses
+            module, "_get_json_local_tls", side_effect=responses
         ), mock.patch.object(module.time, "sleep", return_value=None), mock.patch.object(
             module.time, "monotonic", side_effect=[0.0, 0.0, 2.0]
         ):

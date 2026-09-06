@@ -62,7 +62,9 @@ class HardeningContractsTest(unittest.TestCase):
         self.assertIn("BOOTSTRAP_ADMIN_PASSWORD: '${BOOTSTRAP_ADMIN_PASSWORD:-}'", compose)
         self.assertNotIn("BOOTSTRAP_ADMIN_LOGIN:?", compose)
         self.assertNotIn("BOOTSTRAP_ADMIN_PASSWORD:?", compose)
-        self.assertIn("удалите из `.env.production` обе строки `BOOTSTRAP_ADMIN_LOGIN`", first_run)
+        self.assertIn("`BOOTSTRAP_ADMIN_LOGIN`", first_run)
+        self.assertIn("`BOOTSTRAP_ADMIN_PASSWORD`", first_run)
+        self.assertIn("удалены из production env, bootstrap отключён", first_run)
         self.assertIn("Bootstrap credentials являются временным секретом первого запуска", production)
 
     def test_all_android_workflows_build_through_wrapper(self):

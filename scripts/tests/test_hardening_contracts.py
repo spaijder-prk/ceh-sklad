@@ -53,28 +53,38 @@ class HardeningContractsTest(unittest.TestCase):
         self.assertIn("playwright-report/\n", web_ignore)
         self.assertIn("test-results/\n", web_ignore)
 
-    def test_production_uses_public_ip_https_with_shortlived_acme(self):
+    def test_production_uses_single_nonstandard_https_port_and_internal_ca(self):
         compose = (ROOT / "docker-compose.production.yml").read_text(encoding="utf-8")
         caddy = (ROOT / "Caddyfile").read_text(encoding="utf-8")
         monitor = (ROOT / "scripts/production_monitor.py").read_text(encoding="utf-8")
         release = (ROOT / ".github/workflows/android-release.yml").read_text(encoding="utf-8")
+        release_manifest = (ROOT / "android/app/src/release/AndroidManifest.xml").read_text(encoding="utf-8")
+        network_security = (ROOT / "android/app/src/release/res/xml/network_security_config.xml").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("caddy:2.11.3-alpine", compose)
         self.assertIn("CEH_PUBLIC_ORIGIN", compose)
-        self.assertIn('"80:80"', compose)
         self.assertIn('"${CEH_PUBLIC_PORT:?Задайте CEH_PUBLIC_PORT}:443"', compose)
+        self.assertNotIn('"80:80"', compose)
+        self.assertNotIn(":443/udp", compose)
+        self.assertNotIn("ACME_EMAIL", compose)
         self.assertNotIn("CEH_DOMAIN", compose)
 
-        self.assertIn("http://{$CEH_PUBLIC_HOST}", caddy)
         self.assertIn("https://{$CEH_PUBLIC_HOST}", caddy)
-        self.assertIn("profile shortlived", caddy)
-        self.assertIn("disable_tlsalpn_challenge", caddy)
+        self.assertIn("tls internal", caddy)
+        self.assertIn("auto_https disable_redirects", caddy)
+        self.assertNotIn("issuer acme", caddy)
+        self.assertNotIn("profile shortlived", caddy)
         self.assertIn("{$CEH_PUBLIC_WS_ORIGIN}", caddy)
         self.assertNotIn("CEH_DOMAIN", caddy)
 
         self.assertIn("CEH_PUBLIC_ORIGIN", monitor)
         self.assertNotIn("CEH_DOMAIN", monitor)
         self.assertIn("https://IP:PORT/", release)
+        self.assertIn('android:networkSecurityConfig="@xml/network_security_config"', release_manifest)
+        self.assertIn('<certificates src="user" />', network_security)
+        self.assertIn('cleartextTrafficPermitted="false"', network_security)
 
     def test_production_bootstrap_can_be_disabled_after_initialization(self):
         compose = (ROOT / "docker-compose.production.yml").read_text(encoding="utf-8")

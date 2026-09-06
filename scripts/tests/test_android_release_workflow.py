@@ -17,7 +17,7 @@ PRODUCT_VERSION_PATH = REPO_ROOT / "VERSION"
 
 
 class AndroidReleaseContractTests(unittest.TestCase):
-    def test_release_workflow_preserves_signing_and_immutability_contract(self) -> None:
+    def test_release_workflow_preserves_signing_ca_and_immutability_contract(self) -> None:
         workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
         required_fragments = (
@@ -32,8 +32,13 @@ class AndroidReleaseContractTests(unittest.TestCase):
             "PROJECT_CI_COUNT",
             "RELEASE_CONTRACT_CI_COUNT",
             'python -m unittest discover -s scripts/tests -p "test_*.py" -v',
+            "CEH_INTERNAL_CA_CERT_BASE64",
+            "Подготовить публичный root CA production",
+            "ceh-sklad-root-ca.crt",
+            "openssl x509",
             "verify_release_backend.py",
             "Проверить production backend перед подписью",
+            '--ca-cert "$RUNNER_TEMP/ceh-sklad-root-ca.crt"',
             "android-release-backend.json",
             "android-release-backend-preflight-${{ github.run_id }}",
             ":app:assembleRelease",
@@ -43,6 +48,7 @@ class AndroidReleaseContractTests(unittest.TestCase):
             "jarsigner -verify",
             "android_release_manifest.py",
             "verify_android_release.py",
+            '--ca-cert "$RELEASE_DIR/ceh-sklad-root-ca.crt"',
             "Перепроверить подготовленные файлы релиза",
             "sha256sum",
             "gh release view",
@@ -50,7 +56,7 @@ class AndroidReleaseContractTests(unittest.TestCase):
             '--target "$GITHUB_SHA"',
             "android-v${VERSION_NAME}",
             "if: ${{ always() }}",
-            'rm -f "$RUNNER_TEMP/ceh-sklad-release.keystore"',
+            'rm -f "$RUNNER_TEMP/ceh-sklad-release.keystore" "$RUNNER_TEMP/ceh-sklad-root-ca.crt"',
         )
         for fragment in required_fragments:
             with self.subTest(fragment=fragment):

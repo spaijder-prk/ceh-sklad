@@ -60,16 +60,11 @@ services:
     image: caddy:2.11.3-alpine
     restart: unless-stopped
     environment:
-      CEH_PUBLIC_IP: ${CEH_PUBLIC_IP:?Задайте CEH_PUBLIC_IP}
       CEH_PUBLIC_HOST: ${CEH_PUBLIC_HOST:?Задайте CEH_PUBLIC_HOST}
-      CEH_PUBLIC_PORT: ${CEH_PUBLIC_PORT:?Задайте CEH_PUBLIC_PORT}
       CEH_PUBLIC_ORIGIN: ${CEH_PUBLIC_ORIGIN:?Задайте CEH_PUBLIC_ORIGIN}
       CEH_PUBLIC_WS_ORIGIN: ${CEH_PUBLIC_WS_ORIGIN:?Задайте CEH_PUBLIC_WS_ORIGIN}
-      ACME_EMAIL: ${ACME_EMAIL:?Задайте ACME_EMAIL}
     ports:
-      - "80:80"
       - "${CEH_PUBLIC_PORT:?Задайте CEH_PUBLIC_PORT}:443"
-      - "${CEH_PUBLIC_PORT:?Задайте CEH_PUBLIC_PORT}:443/udp"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

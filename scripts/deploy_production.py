@@ -2,16 +2,18 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import ipaddress
 import json
 import os
+import socket
+import ssl
 import stat
 import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -65,8 +67,6 @@ def validate_public_port(value: str) -> int:
         raise RuntimeError("CEH_PUBLIC_PORT должен быть целым числом") from exc
     if port < 1 or port > 65535:
         raise RuntimeError("CEH_PUBLIC_PORT должен быть в диапазоне 1..65535")
-    if port == 80:
-        raise RuntimeError("CEH_PUBLIC_PORT=80 запрещён: TCP 80 нужен для ACME HTTP-01")
     return port
 
 
@@ -86,6 +86,9 @@ def validate_public_endpoint(env_values: dict[str, str]) -> tuple[str, int, str]
     port = validate_public_port(env_values.get("CEH_PUBLIC_PORT", ""))
     expected_host = public_host(ip)
     expected_origin, expected_ws_origin = public_origins(ip, port)
+
+    if env_values.get("CEH_TLS_MODE") != "internal-ca":
+        raise RuntimeError("CEH_TLS_MODE должен быть internal-ca для production без внешних 80/443")
 
     actual_host = env_values.get("CEH_PUBLIC_HOST", "")
     actual_origin = env_values.get("CEH_PUBLIC_ORIGIN", "").rstrip("/")
@@ -142,24 +145,93 @@ def make_backup() -> None:
     run_command(["sh", "scripts/backup.sh", "--production"])
 
 
-def _get_json(url: str, timeout: float) -> dict[str, object]:
-    request = Request(url, headers={"Accept": "application/json", "User-Agent": "ceh-sklad-deploy/0.4"})
-    with urlopen(request, timeout=timeout) as response:  # noqa: S310 - URL собран из проверенного public IP/port
-        payload = json.load(response)
+def read_caddy_root_ca(timeout: float = 45.0) -> str:
+    deadline = time.monotonic() + timeout
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            result = run_command(
+                compose_command(
+                    "exec",
+                    "-T",
+                    "caddy",
+                    "cat",
+                    "/data/caddy/pki/authorities/local/root.crt",
+                ),
+                capture=True,
+            )
+            pem = result.stdout.strip()
+            if "BEGIN CERTIFICATE" not in pem:
+                raise RuntimeError("Caddy root CA ещё не создан")
+            return pem + "\n"
+        except (RuntimeError, subprocess.CalledProcessError) as exc:
+            last_error = exc
+            time.sleep(2)
+    raise RuntimeError(f"Не удалось получить root CA Caddy: {last_error}")
+
+
+def _get_json_local_tls(
+    base_url: str,
+    path: str,
+    timeout: float,
+    context: ssl.SSLContext,
+    *,
+    connect_host: str = "127.0.0.1",
+) -> dict[str, object]:
+    parsed = urlsplit(base_url)
+    server_name = parsed.hostname
+    if not server_name:
+        raise RuntimeError("production origin не содержит hostname/IP")
+    port = parsed.port or 443
+    host_header = parsed.netloc
+
+    raw_socket = socket.create_connection((connect_host, port), timeout=timeout)
+    try:
+        tls_socket = context.wrap_socket(raw_socket, server_hostname=server_name)
+        try:
+            request = (
+                f"GET {path} HTTP/1.1\r\n"
+                f"Host: {host_header}\r\n"
+                "Accept: application/json\r\n"
+                "User-Agent: ceh-sklad-deploy/0.4\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode("ascii")
+            tls_socket.sendall(request)
+            response = http.client.HTTPResponse(tls_socket)
+            response.begin()
+            raw = response.read()
+            if response.status != 200:
+                raise RuntimeError(f"{path} вернул HTTP {response.status}")
+        finally:
+            tls_socket.close()
+    except Exception:
+        raw_socket.close()
+        raise
+
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"{path} вернул некорректный JSON") from exc
     if not isinstance(payload, dict):
-        raise RuntimeError(f"{url} вернул не JSON-объект")
+        raise RuntimeError(f"{path} вернул не JSON-объект")
     return payload
 
 
-def wait_for_readiness(base_url: str, expected_version: str, timeout: float) -> dict[str, object]:
+def wait_for_readiness(
+    base_url: str,
+    expected_version: str,
+    timeout: float,
+    root_ca_pem: str,
+) -> dict[str, object]:
     deadline = time.monotonic() + timeout
     last_error: Exception | None = None
     base_url = base_url.rstrip("/")
+    context = ssl.create_default_context(cadata=root_ca_pem)
 
     while time.monotonic() < deadline:
         try:
-            live = _get_json(f"{base_url}/health", min(10.0, timeout))
-            ready = _get_json(f"{base_url}/health/ready", min(10.0, timeout))
+            live = _get_json_local_tls(base_url, "/health", min(10.0, timeout), context)
+            ready = _get_json_local_tls(base_url, "/health/ready", min(10.0, timeout), context)
             if live.get("status") != "ok":
                 raise RuntimeError(f"liveness status={live.get('status')!r}")
             if ready.get("status") != "ready" or ready.get("database") != "ok":
@@ -176,16 +248,16 @@ def wait_for_readiness(base_url: str, expected_version: str, timeout: float) -> 
             if not ready.get("schema_revision"):
                 raise RuntimeError("readiness не вернул schema_revision")
             return ready
-        except (HTTPError, URLError, TimeoutError, OSError, ValueError, RuntimeError) as exc:
+        except (TimeoutError, OSError, ValueError, RuntimeError, ssl.SSLError) as exc:
             last_error = exc
             time.sleep(3)
 
-    raise RuntimeError(f"HTTPS readiness не стала готовой за {timeout:.0f} с: {last_error}")
+    raise RuntimeError(f"Локальная HTTPS readiness не стала готовой за {timeout:.0f} с: {last_error}")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Безопасно проверить или обновить production-контур Цех Склад по IP и порту"
+        description="Безопасно проверить или обновить production-контур Цех Склад по IP и нестандартному порту"
     )
     parser.add_argument(
         "--check-only",
@@ -240,13 +312,13 @@ def main() -> int:
         run_command(compose_command("config", "--quiet"))
 
         print("2/6 Проверяю production endpoint IP:port...")
-        print(f"Endpoint: {base_url} (IP={ip}, HTTPS port={port})")
-        print("Для выдачи и автоматического продления IP-сертификата TCP 80 должен быть доступен Caddy извне.")
+        print(f"Endpoint: {base_url} (IP={ip}, HTTPS port={port}, TLS=internal-ca)")
+        print("Внешние TCP 80/443 не требуются. NAT должен пробрасывать только выбранный HTTPS-порт.")
 
         if args.check_only:
             print(
-                "Preflight сервера успешен: env/права, public IP/port, Docker daemon и Compose готовы. "
-                "Контейнеры и данные не изменялись. Внешнюю доступность TCP 80 проверьте с другой сети."
+                "Preflight сервера успешен: env/права, public IP/port, internal-CA профиль, Docker daemon и Compose готовы. "
+                "Контейнеры и данные не изменялись."
             )
             return 0
 
@@ -265,19 +337,19 @@ def main() -> int:
             up_args.append("--build")
         run_command(compose_command(*up_args))
 
-        print("5/6 Ожидаю внешний HTTPS health/readiness...")
-        ready = wait_for_readiness(base_url, expected_version, args.timeout)
+        print("5/6 Получаю root CA и проверяю локальный HTTPS без зависимости от NAT loopback...")
+        root_ca_pem = read_caddy_root_ca(min(45.0, args.timeout))
+        ready = wait_for_readiness(base_url, expected_version, args.timeout, root_ca_pem)
 
         print("6/6 Проверяю состояние контейнеров...")
         run_command(compose_command("ps"))
         print(
-            "Production готов: "
+            "Production локально готов: "
             f"{base_url}, version={expected_version}, schema={ready.get('schema_revision')}"
         )
         print(
-            "Следующий шаг: войти bootstrap-администратором, сменить пароль, подтвердить "
-            "повторный вход, удалить обе BOOTSTRAP_ADMIN_* строки из .env.production и "
-            "продолжить по docs/GO_LIVE.md."
+            "Deployment намеренно не зависит от NAT hairpin. Следующий шаг: экспортировать root CA, "
+            "установить его на клиент и проверить https://IP:PORT с другой сети."
         )
         return 0
     except (RuntimeError, subprocess.CalledProcessError) as exc:

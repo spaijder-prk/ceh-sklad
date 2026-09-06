@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       base_url:
-        description: HTTPS origin staging, например https://staging-sklad.example.ru
+        description: HTTPS origin staging/production, например https://IP:PORT
         required: true
         type: string
       location_id:
@@ -112,16 +112,28 @@ jobs:
       - name: Проверить входные параметры и secrets
         env:
           BASE_URL: ${{ inputs.base_url }}
+          INTERNAL_CA_BASE64: ${{ secrets.CEH_INTERNAL_CA_CERT_BASE64 }}
           REP_LOGIN: ${{ secrets.CEH_STAGING_REP_LOGIN }}
           REP_PASSWORD: ${{ secrets.CEH_STAGING_REP_PASSWORD }}
         run: |
           case "$BASE_URL" in https://*) ;; *) echo "base_url должен использовать HTTPS"; exit 2 ;; esac
+          test -n "$INTERNAL_CA_BASE64" || { echo "Не задан CEH_INTERNAL_CA_CERT_BASE64"; exit 2; }
           test -n "$REP_LOGIN" || { echo "Не задан CEH_STAGING_REP_LOGIN"; exit 2; }
           test -n "$REP_PASSWORD" || { echo "Не задан CEH_STAGING_REP_PASSWORD"; exit 2; }
+      - name: Подготовить доверенный internal CA
+        env:
+          INTERNAL_CA_BASE64: ${{ secrets.CEH_INTERNAL_CA_CERT_BASE64 }}
+        run: |
+          CA_FILE="$RUNNER_TEMP/ceh-sklad-root-ca.crt"
+          echo "$INTERNAL_CA_BASE64" | base64 --decode > "$CA_FILE"
+          openssl x509 -in "$CA_FILE" -noout -subject -issuer -fingerprint -sha256
+          echo "SSL_CERT_FILE=$CA_FILE" >> "$GITHUB_ENV"
+          echo "REQUESTS_CA_BUNDLE=$CA_FILE" >> "$GITHUB_ENV"
       - name: Проверить точный backend release-контракт
         run: >-
           python scripts/verify_release_backend.py
           --base-url "${{ inputs.base_url }}"
+          --ca-cert "$SSL_CERT_FILE"
           --output "$RUNNER_TEMP/staging-backend-contract.json"
       - name: Выполнить release preflight
         env:
@@ -207,3 +219,6 @@ jobs:
             ${{ runner.temp }}/load-test-execute.json
           if-no-files-found: warn
           retention-days: 14
+      - name: Удалить временный root CA
+        if: ${{ always() }}
+        run: rm -f "$RUNNER_TEMP/ceh-sklad-root-ca.crt"

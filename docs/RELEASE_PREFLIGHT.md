@@ -1,24 +1,42 @@
 # Release preflight staging
 
-`release_preflight.py` — read-only gate перед staging smoke, нагрузочным прогоном и UAT. Он не создает складские документы, продажи и документы УНФ.
+`release_preflight.py` — read-only gate перед staging smoke, нагрузочным прогоном и UAT. Он не создаёт складские документы, продажи или документы УНФ.
+
+Production/staging endpoint может использовать внутренний CA Caddy и нестандартный порт, например `https://PUBLIC_IP:40443`.
+
+## Доверие к internal CA
+
+При ручном запуске сначала экспортируйте public root CA с production server и укажите его Python/HTTP-клиентам:
+
+```bash
+export SSL_CERT_FILE=/path/to/ceh-sklad-root-ca.crt
+export REQUESTS_CA_BUNDLE=/path/to/ceh-sklad-root-ca.crt
+```
+
+Не используйте `-k`, `verify=false` или отключение TLS verification.
+
+В GitHub workflow `Staging-приемка` эти переменные настраиваются автоматически из `CEH_INTERNAL_CA_CERT_BASE64`.
 
 ## Что проверяется
 
-1. staging URL — только чистый HTTPS origin без credentials/path/query;
-2. `GET /health/ready` — `status=ready`, `database=ok`, наличие Alembic revision;
-3. при `--expected-schema-revision` — точное совпадение ожидаемой revision;
-4. при наличии `CEH_STAGING_1C_KEY` или `CEH_1C_KEY` — профиль `unf-cloud-v2`, целевая конфигурация УНФ и `deployment=cloud`;
-5. UNF outbox — число ready/blocked объектов и до пяти безопасных примеров blocking reasons;
-6. в строгом режиме `--require-unf-ready` любой blocked outbox или отсутствие сервисного ключа делает preflight неуспешным.
+1. URL — чистый HTTPS origin без credentials/path/query;
+2. `GET /health/ready` — `status=ready`, `database=ok`, Alembic revision;
+3. при `--expected-schema-revision` — exact revision;
+4. при наличии `CEH_STAGING_1C_KEY`/`CEH_1C_KEY` — профиль УНФ;
+5. UNF outbox и blocking reasons;
+6. при `--require-unf-ready` blocked outbox/нет ключа делают gate неуспешным.
 
-Команда использует только `GET`. Сервисный ключ передается только в integration endpoints и не попадает в JSON-отчет.
+Команда использует только GET. Сервисный ключ не записывается в JSON report.
 
 ## Локальный запуск
 
 ```bash
+export SSL_CERT_FILE=/path/to/ceh-sklad-root-ca.crt
+export REQUESTS_CA_BUNDLE=/path/to/ceh-sklad-root-ca.crt
 export CEH_STAGING_1C_KEY='***'
+
 python scripts/release_preflight.py \
-  --base-url 'https://staging-sklad.example.ru' \
+  --base-url 'https://<PUBLIC_IP>:40443' \
   --expected-schema-revision '20260904_09' \
   --require-unf-ready \
   --output /tmp/ceh-release-preflight.json
@@ -27,23 +45,28 @@ python scripts/release_preflight.py \
 Коды возврата:
 
 - `0` — gate готов;
-- `2` — некорректная локальная конфигурация запуска;
-- `3` — staging доступен, но release prerequisites не выполнены или удаленная проверка завершилась ошибкой.
+- `2` — некорректная локальная конфигурация;
+- `3` — prerequisites не выполнены или удалённая проверка завершилась ошибкой.
 
 ## GitHub Actions
 
-Ручной workflow `Staging-приемка` запускает preflight до авторизации representative и до load-test. JSON сохраняется как artifact `staging-release-preflight`, в том числе при неуспешном gate.
+`Staging-приемка` до representative/login/load-test:
 
-`require_unf_ready=true` следует включать на финальном staging прогоне перед UAT/релизом. До получения реального tenant его можно оставить выключенным, если `CEH_STAGING_1C_KEY` еще не настроен.
+1. декодирует публичный internal root CA;
+2. выполняет `scripts/verify_release_backend.py --ca-cert ...` для exact version/Alembic contract;
+3. запускает `release_preflight.py` с тем же trust environment;
+4. сохраняет JSON artifacts.
 
-## Связь с реальной 1С:Фреш
+`require_unf_ready=true` включается на финальном прогоне перед УНФ UAT.
 
-Этот preflight проверяет внешний `ceh-sklad` и серверный integration contract/outbox. Он **не заменяет** живую проверку tenant.
+## Реальная 1С:Фреш
 
-После получения URL и сервисной учетной записи УНФ обязательный второй gate:
+Этот preflight проверяет `ceh-sklad` и серверный integration contract/outbox, но не заменяет живую проверку tenant.
+
+После получения реальной УНФ выполняется отдельный gate:
 
 ```bash
 ceh-unf-fresh-health --mapping /etc/ceh-sklad/unf-tenant.json
 ```
 
-`ceh-unf-fresh-health` дополнительно проверяет реальный `$metadata`, tenant mapping, поля импорта, известные `Ref_Key` и собираемость payload всех ready операций без POST/create/confirm.
+Он проверяет реальный `$metadata`, mapping, reference objects и собираемость payload без массовой записи.

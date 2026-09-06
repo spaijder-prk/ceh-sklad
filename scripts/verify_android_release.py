@@ -81,6 +81,7 @@ def verify_release(
     manifest_path: Path,
     checksums_path: Path,
     apksigner: Path,
+    ca_cert: Path | None = None,
     jarsigner: str = "jarsigner",
     expected_api_base_url: str | None = None,
     expected_source_commit: str | None = None,
@@ -89,6 +90,8 @@ def verify_release(
     _require_file(apk, "Release APK")
     _require_file(aab, "Release AAB")
     _require_file(apksigner, "apksigner")
+    if ca_cert is not None:
+        _require_file(ca_cert, "Production root CA")
 
     manifest = load_manifest(manifest_path)
     checksums = load_checksums(checksums_path)
@@ -107,6 +110,11 @@ def verify_release(
         aab.name: actual_aab_sha,
         manifest_path.name: actual_manifest_sha,
     }
+    actual_ca_sha: str | None = None
+    if ca_cert is not None:
+        actual_ca_sha = sha256_file(ca_cert)
+        expected_files[ca_cert.name] = actual_ca_sha
+
     for filename, digest in expected_files.items():
         if checksums.get(filename) != digest:
             raise ValueError(f"SHA256SUMS.txt не подтверждает файл {filename}")
@@ -152,6 +160,7 @@ def verify_release(
         "source_commit": manifest.get("source_commit"),
         "apk_sha256": actual_apk_sha,
         "aab_sha256": actual_aab_sha,
+        "root_ca_sha256": actual_ca_sha,
         "signer_certificate_sha256": signer_sha256,
     }
 
@@ -165,6 +174,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--checksums", required=True, type=Path)
     parser.add_argument("--apksigner", required=True, type=Path)
+    parser.add_argument("--ca-cert", type=Path, help="Публичный production root CA из GitHub Release")
     parser.add_argument("--jarsigner", default="jarsigner")
     parser.add_argument("--expected-api-base-url")
     parser.add_argument("--expected-source-commit")
@@ -179,6 +189,7 @@ def main() -> None:
         manifest_path=args.manifest,
         checksums_path=args.checksums,
         apksigner=args.apksigner,
+        ca_cert=args.ca_cert,
         jarsigner=args.jarsigner,
         expected_api_base_url=args.expected_api_base_url,
         expected_source_commit=args.expected_source_commit,

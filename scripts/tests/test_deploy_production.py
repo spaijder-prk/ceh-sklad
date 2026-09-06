@@ -24,9 +24,10 @@ class DeployProductionTests(unittest.TestCase):
                 "# comment\n"
                 "CEH_PUBLIC_IP=93.184.216.34\n"
                 "CEH_PUBLIC_HOST=93.184.216.34\n"
-                "CEH_PUBLIC_PORT=8443\n"
-                "CEH_PUBLIC_ORIGIN=https://93.184.216.34:8443\n"
-                "CEH_PUBLIC_WS_ORIGIN=wss://93.184.216.34:8443\n"
+                "CEH_PUBLIC_PORT=40443\n"
+                "CEH_PUBLIC_ORIGIN=https://93.184.216.34:40443\n"
+                "CEH_PUBLIC_WS_ORIGIN=wss://93.184.216.34:40443\n"
+                "CEH_TLS_MODE=internal-ca\n"
                 "APP_NAME='Цех Склад'\n",
                 encoding="utf-8",
             )
@@ -34,16 +35,17 @@ class DeployProductionTests(unittest.TestCase):
         self.assertEqual(values["APP_NAME"], "Цех Склад")
         self.assertEqual(
             module.validate_public_endpoint(values),
-            ("93.184.216.34", 8443, "https://93.184.216.34:8443"),
+            ("93.184.216.34", 40443, "https://93.184.216.34:40443"),
         )
 
-    def test_public_endpoint_rejects_private_ip_and_drift(self) -> None:
+    def test_public_endpoint_rejects_private_ip_drift_and_wrong_tls_mode(self) -> None:
         private_env = {
             "CEH_PUBLIC_IP": "192.168.1.10",
             "CEH_PUBLIC_HOST": "192.168.1.10",
-            "CEH_PUBLIC_PORT": "8443",
-            "CEH_PUBLIC_ORIGIN": "https://192.168.1.10:8443",
-            "CEH_PUBLIC_WS_ORIGIN": "wss://192.168.1.10:8443",
+            "CEH_PUBLIC_PORT": "40443",
+            "CEH_PUBLIC_ORIGIN": "https://192.168.1.10:40443",
+            "CEH_PUBLIC_WS_ORIGIN": "wss://192.168.1.10:40443",
+            "CEH_TLS_MODE": "internal-ca",
         }
         with self.assertRaisesRegex(RuntimeError, "публичным"):
             module.validate_public_endpoint(private_env)
@@ -51,21 +53,31 @@ class DeployProductionTests(unittest.TestCase):
         drift_env = {
             "CEH_PUBLIC_IP": "93.184.216.34",
             "CEH_PUBLIC_HOST": "93.184.216.34",
-            "CEH_PUBLIC_PORT": "8443",
-            "CEH_PUBLIC_ORIGIN": "https://93.184.216.34:9443",
-            "CEH_PUBLIC_WS_ORIGIN": "wss://93.184.216.34:8443",
+            "CEH_PUBLIC_PORT": "40443",
+            "CEH_PUBLIC_ORIGIN": "https://93.184.216.34:44443",
+            "CEH_PUBLIC_WS_ORIGIN": "wss://93.184.216.34:40443",
+            "CEH_TLS_MODE": "internal-ca",
         }
         with self.assertRaisesRegex(RuntimeError, "CEH_PUBLIC_ORIGIN"):
             module.validate_public_endpoint(drift_env)
 
-    def test_public_port_rejects_http_port(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "ACME HTTP-01"):
-            module.validate_public_port("80")
+        wrong_tls = dict(drift_env)
+        wrong_tls["CEH_PUBLIC_ORIGIN"] = "https://93.184.216.34:40443"
+        wrong_tls["CEH_TLS_MODE"] = "acme"
+        with self.assertRaisesRegex(RuntimeError, "CEH_TLS_MODE"):
+            module.validate_public_endpoint(wrong_tls)
+
+    def test_public_port_accepts_nonstandard_and_standard_ports(self) -> None:
+        self.assertEqual(module.validate_public_port("40443"), 40443)
+        self.assertEqual(module.validate_public_port("80"), 80)
+        for value in ("0", "65536", "abc"):
+            with self.subTest(value=value), self.assertRaises(RuntimeError):
+                module.validate_public_port(value)
 
     def test_ipv6_origin_uses_brackets(self) -> None:
         self.assertEqual(
-            module.public_origins("2606:4700:4700::1111", 9443),
-            ("https://[2606:4700:4700::1111]:9443", "wss://[2606:4700:4700::1111]:9443"),
+            module.public_origins("2606:4700:4700::1111", 40443),
+            ("https://[2606:4700:4700::1111]:40443", "wss://[2606:4700:4700::1111]:40443"),
         )
 
     def test_compose_command_is_pinned_to_production_files(self) -> None:
@@ -94,7 +106,7 @@ class DeployProductionTests(unittest.TestCase):
             path.chmod(0o600)
             module.validate_env_permissions(path)
 
-    def test_wait_for_readiness_checks_version_and_schema(self) -> None:
+    def test_wait_for_readiness_uses_local_tls_and_checks_version_schema(self) -> None:
         responses = [
             {"status": "ok", "version": "0.4.0"},
             {
@@ -104,9 +116,15 @@ class DeployProductionTests(unittest.TestCase):
                 "schema_revision": "20260904_09",
             },
         ]
-        with mock.patch.object(module, "_get_json", side_effect=responses):
-            ready = module.wait_for_readiness("https://93.184.216.34:8443", "0.4.0", 1.0)
+        with mock.patch.object(module.ssl, "create_default_context", return_value=object()), mock.patch.object(
+            module, "_get_json_local_tls", side_effect=responses
+        ) as getter:
+            ready = module.wait_for_readiness(
+                "https://93.184.216.34:40443", "0.4.0", 1.0, "TEST ROOT CA"
+            )
         self.assertEqual(ready["schema_revision"], "20260904_09")
+        self.assertEqual(getter.call_args_list[0].args[0], "https://93.184.216.34:40443")
+        self.assertEqual(getter.call_args_list[0].args[1], "/health")
 
     def test_wait_for_readiness_reports_database_state(self) -> None:
         responses = [
@@ -118,11 +136,15 @@ class DeployProductionTests(unittest.TestCase):
                 "schema_revision": "20260904_09",
             },
         ]
-        with mock.patch.object(module, "_get_json", side_effect=responses), mock.patch.object(
-            module.time, "sleep", return_value=None
-        ), mock.patch.object(module.time, "monotonic", side_effect=[0.0, 0.0, 2.0]):
+        with mock.patch.object(module.ssl, "create_default_context", return_value=object()), mock.patch.object(
+            module, "_get_json_local_tls", side_effect=responses
+        ), mock.patch.object(module.time, "sleep", return_value=None), mock.patch.object(
+            module.time, "monotonic", side_effect=[0.0, 0.0, 2.0]
+        ):
             with self.assertRaisesRegex(RuntimeError, "database='down'"):
-                module.wait_for_readiness("https://93.184.216.34:8443", "0.4.0", 1.0)
+                module.wait_for_readiness(
+                    "https://93.184.216.34:40443", "0.4.0", 1.0, "TEST ROOT CA"
+                )
 
     def test_wait_for_readiness_rejects_wrong_version(self) -> None:
         responses = [
@@ -134,11 +156,15 @@ class DeployProductionTests(unittest.TestCase):
                 "schema_revision": "20260904_09",
             },
         ]
-        with mock.patch.object(module, "_get_json", side_effect=responses), mock.patch.object(
-            module.time, "sleep", return_value=None
-        ), mock.patch.object(module.time, "monotonic", side_effect=[0.0, 0.0, 2.0]):
+        with mock.patch.object(module.ssl, "create_default_context", return_value=object()), mock.patch.object(
+            module, "_get_json_local_tls", side_effect=responses
+        ), mock.patch.object(module.time, "sleep", return_value=None), mock.patch.object(
+            module.time, "monotonic", side_effect=[0.0, 0.0, 2.0]
+        ):
             with self.assertRaises(RuntimeError):
-                module.wait_for_readiness("https://93.184.216.34:8443", "0.4.0", 1.0)
+                module.wait_for_readiness(
+                    "https://93.184.216.34:40443", "0.4.0", 1.0, "TEST ROOT CA"
+                )
 
 
 if __name__ == "__main__":

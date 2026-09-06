@@ -1,18 +1,9 @@
 {
-    email {$ACME_EMAIL}
-}
-
-http://{$CEH_PUBLIC_HOST} {
-    redir {$CEH_PUBLIC_ORIGIN}{uri} permanent
+    auto_https disable_redirects
 }
 
 https://{$CEH_PUBLIC_HOST} {
-    tls {
-        issuer acme {
-            profile shortlived
-            disable_tlsalpn_challenge
-        }
-    }
+    tls internal
 
     encode zstd gzip
 

@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import shutil
+import socket
+import ssl
 import sys
 import time
 from pathlib import Path
@@ -35,15 +38,70 @@ def _base_url() -> str:
     raise ValueError("Не задан CEH_MONITOR_BASE_URL или CEH_PUBLIC_ORIGIN")
 
 
-def _get_json(url: str) -> dict:
+def _monitor_ssl_context() -> ssl.SSLContext:
+    ca_value = os.environ.get("CEH_MONITOR_CA_CERT", "").strip()
+    tls_mode = os.environ.get("CEH_TLS_MODE", "").strip()
+    if not ca_value:
+        if tls_mode == "internal-ca":
+            raise ValueError("Для CEH_TLS_MODE=internal-ca задайте CEH_MONITOR_CA_CERT")
+        return ssl.create_default_context()
+    ca_path = Path(ca_value).expanduser()
+    if not ca_path.is_file():
+        raise ValueError(f"CEH_MONITOR_CA_CERT не найден: {ca_path}")
+    return ssl.create_default_context(cafile=str(ca_path))
+
+
+def _get_json_public(url: str, context: ssl.SSLContext) -> dict:
     request = Request(url, headers={"User-Agent": "ceh-sklad-production-monitor/1"})
-    with urlopen(request, timeout=10) as response:
+    with urlopen(request, timeout=10, context=context) as response:
         if response.status != 200:
             raise RuntimeError(f"HTTP {response.status}")
         value = json.loads(response.read().decode("utf-8"))
     if not isinstance(value, dict):
         raise RuntimeError("Сервер вернул неожиданный JSON")
     return value
+
+
+def _get_json_local(base_url: str, path: str, context: ssl.SSLContext, connect_host: str) -> dict:
+    parsed = urlsplit(base_url)
+    server_name = parsed.hostname
+    if not server_name:
+        raise RuntimeError("CEH_PUBLIC_ORIGIN не содержит hostname/IP")
+    port = parsed.port or 443
+    raw_socket = socket.create_connection((connect_host, port), timeout=10)
+    try:
+        tls_socket = context.wrap_socket(raw_socket, server_hostname=server_name)
+        try:
+            request = (
+                f"GET {path} HTTP/1.1\r\n"
+                f"Host: {parsed.netloc}\r\n"
+                "Accept: application/json\r\n"
+                "User-Agent: ceh-sklad-production-monitor/1\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode("ascii")
+            tls_socket.sendall(request)
+            response = http.client.HTTPResponse(tls_socket)
+            response.begin()
+            raw = response.read()
+            if response.status != 200:
+                raise RuntimeError(f"{path} вернул HTTP {response.status}")
+        finally:
+            tls_socket.close()
+    except Exception:
+        raw_socket.close()
+        raise
+
+    value = json.loads(raw.decode("utf-8"))
+    if not isinstance(value, dict):
+        raise RuntimeError("Сервер вернул неожиданный JSON")
+    return value
+
+
+def _health_json(base_url: str, path: str, context: ssl.SSLContext) -> dict:
+    connect_host = os.environ.get("CEH_MONITOR_CONNECT_HOST", "").strip()
+    if connect_host:
+        return _get_json_local(base_url, path, context, connect_host)
+    return _get_json_public(f"{base_url}{path}", context)
 
 
 def _latest_backup(backup_dir: Path) -> Path:
@@ -89,16 +147,18 @@ def main() -> int:
 
     try:
         base_url = _base_url()
-        health = _get_json(f"{base_url}/health")
-        ready = _get_json(f"{base_url}/health/ready")
+        context = _monitor_ssl_context()
+        health = _health_json(base_url, "/health", context)
+        ready = _health_json(base_url, "/health/ready", context)
         if health.get("status") != "ok":
             errors.append("/health не вернул status=ok")
         if ready.get("status") != "ready" or ready.get("database") != "ok":
             errors.append("/health/ready не подтвердил готовность PostgreSQL")
         details["base_url"] = base_url
+        details["connect_host"] = os.environ.get("CEH_MONITOR_CONNECT_HOST", "public")
         details["version"] = health.get("version")
         details["schema_revision"] = ready.get("schema_revision")
-    except (HTTPError, URLError, TimeoutError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+    except (HTTPError, URLError, TimeoutError, ValueError, RuntimeError, json.JSONDecodeError, ssl.SSLError, OSError) as exc:
         errors.append(f"HTTPS health: {exc}")
 
     backup_dir = Path(os.environ.get("CEH_BACKUP_DIR", "backups"))
@@ -135,7 +195,7 @@ def main() -> int:
     if errors:
         try:
             _send_webhook(payload)
-        except Exception as exc:  # webhook не должен скрывать исходную ошибку мониторинга
+        except Exception as exc:
             print(f"Не удалось отправить webhook мониторинга: {exc}", file=sys.stderr)
         return 1
     return 0

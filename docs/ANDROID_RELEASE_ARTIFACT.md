@@ -1,6 +1,6 @@
 # Проверяемый Android release
 
-Ручной workflow `Подписанный Android release` формирует проверяемый пакет и после всех release-gates публикует его как постоянный GitHub Release с уникальным tag `android-v<versionName>`.
+Ручной workflow `Подписанный Android release` после всех release-gates публикует постоянный GitHub Release с уникальным tag `android-v<versionName>`.
 
 ## Файлы релиза
 
@@ -9,38 +9,40 @@ GitHub Release содержит:
 - `ceh-sklad-<version>.apk` — подписанный APK;
 - `ceh-sklad-<version>.aab` — подписанный Android App Bundle;
 - `android-release-manifest.json` — несекретный manifest сборки;
-- `SHA256SUMS.txt` — SHA-256 APK, AAB и manifest.
+- `ceh-sklad-root-ca.crt` — публичный root certificate внутреннего Caddy CA;
+- `SHA256SUMS.txt` — SHA-256 всех четырёх файлов выше.
 
-Тот же набор временно сохраняется как Actions artifact для диагностики. Источником распространения production-сборки является GitHub Release.
+Root certificate не содержит private key. Private CA key остаётся только в production `caddy_data` и его закрытом PKI backup.
 
-## Что содержит manifest
+## Manifest
+
+Manifest фиксирует:
 
 - SHA-256 и размер APK;
-- SHA-256 сертификата подписи;
+- SHA-256 сертификата подписи APK;
 - `application_id`;
-- `version_code` и `version_name`;
-- production API base URL, зашитый в build — для текущей схемы `https://IP:PORT/`;
-- SHA исходного Git commit;
-- время формирования manifest в UTC.
+- `version_code`/`version_name`;
+- точный production API URL `https://IP:PORT/`;
+- source Git commit;
+- UTC-время формирования.
 
-Keystore и пароли в manifest/Release не записываются.
+## Автоматическая перепроверка
 
-## Автоматическая перепроверка до публикации
-
-Workflow выполняет:
+До публикации workflow выполняет:
 
 ```bash
 python scripts/verify_android_release.py \
   --apk "$RELEASE_DIR/ceh-sklad-${VERSION_NAME}.apk" \
   --aab "$RELEASE_DIR/ceh-sklad-${VERSION_NAME}.aab" \
   --manifest "$RELEASE_DIR/android-release-manifest.json" \
+  --ca-cert "$RELEASE_DIR/ceh-sklad-root-ca.crt" \
   --checksums "$RELEASE_DIR/SHA256SUMS.txt" \
   --apksigner "$APKSIGNER" \
   --expected-api-base-url "$API_BASE_URL" \
   --expected-source-commit "$GITHUB_SHA"
 ```
 
-Публикация блокируется при повреждении файлов, другом SHA/signing certificate, неверном `https://IP:PORT/` или другом source commit.
+Verifier требует точный набор checksum-файлов и блокирует публикацию при повреждённом APK/AAB/manifest/root CA, другом signer certificate, неверном `IP:PORT` или source commit.
 
 ## Независимая проверка после скачивания
 
@@ -51,23 +53,25 @@ python scripts/verify_android_release.py \
   --apk ceh-sklad-0.4.0.apk \
   --aab ceh-sklad-0.4.0.aab \
   --manifest android-release-manifest.json \
+  --ca-cert ceh-sklad-root-ca.crt \
   --checksums SHA256SUMS.txt \
   --apksigner "$APKSIGNER" \
   --expected-api-base-url https://<REAL_PUBLIC_IP>:<REAL_HTTPS_PORT>/ \
   --expected-source-commit <40-символьный-SHA>
 ```
 
-Verifier проверяет SHA/размеры, APK/AAB signatures, signer fingerprint, package/version, production API URL и source commit.
+Перед установкой root CA на Android/рабочий компьютер дополнительно сравните его SHA-256 fingerprint со значением, полученным напрямую на production server командой `python3 scripts/export_internal_ca.py`.
 
 ## Безопасность workflow
 
 - release разрешён только с текущего HEAD `main`;
 - на том же SHA должны быть зелёными оба обязательных CI gate;
-- production backend проверяется **до** декодирования keystore по HTTPS readiness, версии и Alembic head;
-- `api_base_url` допускается только как HTTPS origin без credentials/path/query/fragment; IP + custom port поддерживаются;
-- release-contract тесты повторно запускаются до signing;
+- `CEH_INTERNAL_CA_CERT_BASE64` содержит только публичный root certificate;
+- production backend проверяется через этот CA **до декодирования keystore**;
+- exact HTTPS readiness/version/Alembic head обязательны;
+- HTTP и отключение TLS verification не используются;
 - существующий `android-v<versionName>` не перезаписывается;
-- временный keystore удаляется через `always()`;
-- production signing key не хранится в Git и не ротируется между обычными обновлениями.
+- временные keystore/root CA удаляются через `always()`;
+- production signing key и Caddy CA private key не хранятся в Git.
 
-Подготовка signing key и GitHub Secrets описана в `docs/ANDROID_RELEASE.md`.
+Подготовка signing key, root CA и GitHub Secrets описана в `docs/ANDROID_RELEASE.md`.

@@ -1,207 +1,238 @@
-# Production-развертывание по IP и порту
+# Production-развертывание по IP и нестандартному порту
 
-## Рекомендуемый вариант
+## Поддерживаемая схема
 
-Production `ceh-sklad` работает без DNS-домена. Клиенты используют один HTTPS origin вида `https://<PUBLIC_IP>:<PORT>`.
+`ceh-sklad` может работать без домена и без доступных снаружи TCP 80/443. Для вашей инфраструктуры используется внутренний CA Caddy и один отдельный внешний HTTPS-порт.
 
-В `docker-compose.production.yml` PostgreSQL и FastAPI остаются только во внутренней Docker-сети. Наружу публикуются:
-
-- TCP `80` контейнера Caddy — только для ACME HTTP-01 и HTTP → HTTPS redirect;
-- выбранный `CEH_PUBLIC_PORT` → внутренний HTTPS `443` Caddy;
-- тот же UDP-порт для HTTP/3.
-
-PostgreSQL `5432` и backend `8000` наружу не публикуются.
-
-Caddy закреплён на `2.11.3-alpine` и запрашивает публично доверенный сертификат Let’s Encrypt непосредственно для IP через ACME profile `shortlived`. IP-сертификаты Let’s Encrypt короткоживущие, поэтому TCP `80` должен оставаться доступным снаружи для автоматического продления. TLS-ALPN challenge отключён намеренно: рабочий HTTPS может находиться не на внешнем `443`.
-
-> Если IP приватный (`10/8`, `172.16/12`, `192.168/16`, loopback, link-local и т. п.) или TCP `80` невозможно направить на Caddy, этот production-профиль не подходит. Не переходите на HTTP. Для такого варианта нужен отдельный внутренний CA/certificate-pinning контур.
-
-## Подготовка сети и сервера
-
-До первого запуска:
-
-1. выделите стабильный публичный IPv4 или IPv6 production host;
-2. определите внешний HTTPS-порт приложения, например `8443` или стандартный `443`;
-3. направьте входящий TCP `80` на TCP `80` этого host для ACME HTTP-01;
-4. направьте выбранный внешний HTTPS-порт на host; Compose сам перенаправит его во внутренний `443` Caddy;
-5. при необходимости откройте тот же UDP-порт для HTTP/3;
-6. не публикуйте `5432` и `8000` в интернет;
-7. установите Docker Engine и Docker Compose plugin;
-8. проверьте корректное системное время/NTP;
-9. создайте отдельный каталог deployment и ограничьте доступ к `.env.production`.
-
-Порт `80` нельзя использовать как `CEH_PUBLIC_PORT`, потому что он зарезервирован для ACME HTTP-01.
-
-## Быстрая безопасная подготовка `.env.production`
-
-Используйте встроенный генератор:
-
-```bash
-python scripts/prepare_production_env.py \
-  --ip <REAL_PUBLIC_IP> \
-  --port <REAL_HTTPS_PORT> \
-  --email <REAL_ACME_EMAIL>
-```
-
-Например, если рабочий адрес будет `https://198.51.100.25:8443` (пример адреса замените на реальный), генератор создаст согласованные параметры:
+Пример:
 
 ```text
-CEH_PUBLIC_IP=<raw IP>
+PUBLIC_IP:40022/TCP -> SERVER_LAN_IP:22      # SSH
+PUBLIC_IP:40443/TCP -> SERVER_LAN_IP:40443  # Цех Склад HTTPS
+```
+
+Исходящий интернет с production host нужен для Git/Docker/обновлений, но выпуск TLS-сертификата не требует входящих 80/443.
+
+В `docker-compose.production.yml` PostgreSQL и FastAPI остаются только во внутренней Docker-сети. Наружу публикуется только `CEH_PUBLIC_PORT -> caddy:443`. Порты `5432` и `8000` не публикуются.
+
+Caddy закреплён на `2.11.3-alpine` и использует:
+
+```caddy
+https://{$CEH_PUBLIC_HOST} {
+    tls internal
+}
+```
+
+Внутренний CA автоматически создаёт и обновляет leaf-сертификат для IP. Его root CA хранится в постоянном `caddy_data` volume. Клиенты должны явно доверять этому root CA.
+
+## 1. Подготовка сервера и NAT
+
+До запуска:
+
+1. сервер должен иметь постоянный LAN IP;
+2. NAT должен иметь стабильный публичный IPv4/IPv6;
+3. выберите нестандартный внешний SSH-порт, например `40022`;
+4. выберите нестандартный внешний HTTPS-порт, например `40443`;
+5. настройте port-forward SSH на серверный `22`;
+6. настройте port-forward HTTPS на тот же `CEH_PUBLIC_PORT` сервера;
+7. не открывайте `5432`, `8000`, `5173`;
+8. установите Docker Engine и Docker Compose plugin;
+9. проверьте системное время/NTP;
+10. убедитесь, что сервер имеет исходящий доступ в интернет.
+
+Внешние TCP `80` и `443` для `ceh-sklad` не нужны.
+
+## 2. Создание `.env.production`
+
+```bash
+python3 scripts/prepare_production_env.py \
+  --ip <REAL_PUBLIC_IP> \
+  --port <REAL_HTTPS_PORT>
+```
+
+Пример формы команды:
+
+```bash
+python3 scripts/prepare_production_env.py --ip <PUBLIC_IP> --port 40443
+```
+
+Генератор создаёт:
+
+```text
+CEH_PUBLIC_IP=<public IP NAT>
 CEH_PUBLIC_HOST=<IP или [IPv6]>
 CEH_PUBLIC_PORT=<port>
 CEH_PUBLIC_ORIGIN=https://<IP>:<port>
 CEH_PUBLIC_WS_ORIGIN=wss://<IP>:<port>
+CEH_TLS_MODE=internal-ca
 ```
 
-Скрипт:
+и безопасно генерирует PostgreSQL/JWT/bootstrap/1С credentials. Файл создаётся с mode `0600`, никогда не перезаписывается и не печатает секреты.
 
-- принимает только глобально маршрутизируемый публичный IPv4/IPv6;
-- проверяет диапазон порта и запрещает HTTPS на `80`;
-- корректно добавляет `[]` вокруг IPv6 в URL;
-- локально генерирует отдельные случайные пароли/ключи для PostgreSQL, JWT, bootstrap-admin и 1С;
-- корректно URL-encode пароль PostgreSQL в `DATABASE_URL`;
-- создаёт `.env.production` с правами `0600`;
-- никогда не перезаписывает уже существующий файл и не печатает секреты в консоль.
-
-Перед запуском сохраните `BOOTSTRAP_ADMIN_PASSWORD` из `.env.production` в менеджер паролей. После первого входа администратор должен сменить временный bootstrap-пароль, выйти и подтвердить повторный вход новым паролем. После этого удалите из `.env.production` обе строки `BOOTSTRAP_ADMIN_LOGIN` и `BOOTSTRAP_ADMIN_PASSWORD` и повторно примените Compose.
-
-Если требуется полностью ручная настройка, используйте `.env.production.example`, заменив документационный TEST-NET IP и все значения-заглушки.
-
-## Обязательные настройки
-
-Ключевые параметры первого запуска:
-
-```env
-CEH_PUBLIC_IP=<реальный публичный IP>
-CEH_PUBLIC_HOST=<IPv4 либо [IPv6]>
-CEH_PUBLIC_PORT=<внешний HTTPS-порт>
-CEH_PUBLIC_ORIGIN=https://<IP>:<порт>
-CEH_PUBLIC_WS_ORIGIN=wss://<IP>:<порт>
-ACME_EMAIL=<контактный email ACME>
-POSTGRES_PASSWORD=<сложный пароль>
-DATABASE_URL=postgresql+asyncpg://ceh:<URL-encoded пароль>@db:5432/ceh_sklad
-JWT_SECRET=<случайный секрет не короче 32 символов>
-INTEGRATION_1C_API_KEY=<отдельный ключ для 1С>
-BOOTSTRAP_ADMIN_LOGIN=admin
-BOOTSTRAP_ADMIN_PASSWORD=<уникальный сложный пароль>
-```
-
-`CEH_PUBLIC_HOST`, `CEH_PUBLIC_ORIGIN` и `CEH_PUBLIC_WS_ORIGIN` не должны придумывать вручную независимо от IP/порта: `deploy_production.py` проверяет их на точное совпадение и fail-closed останавливается при drift.
-
-`BOOTSTRAP_ADMIN_LOGIN` и `BOOTSTRAP_ADMIN_PASSWORD` нужны только для создания первого администратора. После подтвержденной смены пароля обе переменные должны быть удалены из production env одновременно. Backend валидирует их как пару: нельзя оставить только одну.
-
-При `ENVIRONMENT=production` backend откажется запускаться с дефолтным JWT-секретом, стандартным bootstrap-паролем, тестовым ключом 1С или HTTP-адресом в CORS. Bootstrap-пара допускается пустой после первичной инициализации.
-
-## Проверка сервера без изменений
-
-Перед первым запуском или обновлением выполните read-only preflight:
+## 3. Read-only preflight
 
 ```bash
-python scripts/deploy_production.py --check-only
+python3 scripts/deploy_production.py --check-only
 ```
 
-Команда проверяет:
+Проверяется:
 
-- права `.env.production`;
-- что IP публичный;
-- что IP/port/origin/WSS-origin согласованы;
-- доступность Docker daemon и Docker Compose;
-- итоговый production Compose.
+- `.env.production` и его права;
+- публичность IP;
+- диапазон порта;
+- точное соответствие IP/port/origin/WSS-origin;
+- `CEH_TLS_MODE=internal-ca`;
+- Docker daemon/Compose;
+- итоговая production Compose-конфигурация.
 
-Backup, build, запуск и остановка контейнеров в этом режиме не выполняются. Внешнюю доступность TCP `80` нужно отдельно проверить **с другой сети**: локальная проверка на самом сервере не доказывает прохождение NAT/firewall.
-
-Для ручной диагностики Compose:
+## 4. Первый запуск
 
 ```bash
-docker compose --env-file .env.production -f docker-compose.production.yml config
+python3 scripts/deploy_production.py
 ```
 
-В выводе не должно быть внешних `ports` у `db` и `backend`.
+Backend при старте применяет `alembic upgrade head`. Caddy создаёт внутренний PKI и leaf-сертификат для IP. Deployment получает root CA напрямую из Caddy container и проверяет внешний `/health` и `/health/ready` через обычную TLS-валидацию этого root CA. `ssl verification` не отключается.
 
-## Первый запуск и обновление
+При обычном последующем обновлении работающей БД deploy предварительно делает production backup, если явно не задан `--skip-backup`.
+
+## 5. Экспорт root CA
+
+После первого запуска:
 
 ```bash
-python scripts/deploy_production.py
+python3 scripts/export_internal_ca.py
 ```
 
-При обновлении работающей установки скрипт автоматически делает production-backup БД, затем собирает/поднимает контейнеры и ждёт успешные внешние HTTPS `/health` и `/health/ready` через точный `CEH_PUBLIC_ORIGIN` с версией из `VERSION`. Для первого запуска backup не требуется.
-
-Ручной эквивалент базового запуска:
-
-```bash
-docker compose --env-file .env.production -f docker-compose.production.yml up -d --build
-```
-
-Backend при старте выполняет `alembic upgrade head`. Caddy начинает обслуживать прикладной трафик после backend healthcheck и получает/обновляет IP-сертификат автоматически.
-
-После первого входа и смены пароля:
-
-```bash
-# Удалите обе строки BOOTSTRAP_ADMIN_* из .env.production
-python scripts/deploy_production.py --skip-backup --no-build
-```
-
-Bootstrap credentials являются временным секретом первого запуска. Существующий администратор хранится в PostgreSQL; удаление bootstrap-пары не удаляет пользователя и не сбрасывает новый пароль.
-
-## HTTPS и WebSocket
-
-Рабочий origin задаётся один раз в `.env.production`:
+По умолчанию public root certificate будет сохранён в:
 
 ```text
-CEH_PUBLIC_ORIGIN=https://IP:PORT
-CEH_PUBLIC_WS_ORIGIN=wss://IP:PORT
+~/.ceh-sklad/tls/ceh-sklad-root-ca.crt
 ```
 
-CORS backend, production web bundle, CSP и Caddy используют эти значения согласованно. WebSocket идёт через тот же внешний IP/порт:
+Скрипт выводит SHA-256 fingerprint. Приватный ключ CA не экспортируется.
+
+Этот root certificate не является секретом. Его можно передавать пользователям системы, но fingerprint нужно сверять через доверенный канал.
+
+## 6. Доверие на рабочих компьютерах
+
+Для web-панели установите `ceh-sklad-root-ca.crt` в Trusted Root Certification Authorities ОС/браузера только на доверенных рабочих компьютерах. После установки перезапустите браузер.
+
+Рабочий адрес:
 
 ```text
-wss://IP:PORT/api/v1/realtime
+https://PUBLIC_IP:40443
 ```
 
-JWT не помещается в WebSocket URL: Android/staging передают его в `Authorization` header, web использует защищённую session cookie.
+или другой фактически выбранный порт.
 
-Проверка после запуска:
+Нельзя использовать `curl -k`, `verify=false`, «продолжить несмотря на ошибку сертификата» и другие способы отключения TLS verification.
+
+## 7. Доверие на Android
+
+Release Android по-прежнему имеет `android:usesCleartextTraffic=false`. Для release source-set задан network security config, который доверяет системным CA и CA, установленным пользователем.
+
+До первого запуска приложения установите тот же `ceh-sklad-root-ca.crt` как пользовательский CA на контролируемое Android-устройство и сверяйте fingerprint.
+
+GitHub Release содержит root CA рядом с APK/AAB и включает его в `SHA256SUMS.txt`.
+
+## 8. GitHub Secret root CA
+
+После экспорта root CA загрузите **публичный сертификат** в GitHub Secret:
+
+```text
+CEH_INTERNAL_CA_CERT_BASE64
+```
+
+Значение — base64 содержимого `ceh-sklad-root-ca.crt`. Это не CA private key. Приватные Caddy PKI ключи в GitHub не загружаются.
+
+Этот secret используют:
+
+- `Подписанный Android release` для проверки production backend;
+- `Staging-приемка` для HTTPS/WSS/load-test через private CA.
+
+## 9. Bootstrap admin
+
+Перед первым входом сохраните `BOOTSTRAP_ADMIN_PASSWORD` из `.env.production` в менеджере паролей.
+
+После первого входа:
+
+1. смените пароль;
+2. выйдите;
+3. подтвердите повторный вход новым паролем;
+4. удалите обе строки `BOOTSTRAP_ADMIN_LOGIN` и `BOOTSTRAP_ADMIN_PASSWORD`;
+5. выполните:
 
 ```bash
-curl --fail https://<REAL_PUBLIC_IP>:<REAL_HTTPS_PORT>/health
-curl --fail https://<REAL_PUBLIC_IP>:<REAL_HTTPS_PORT>/health/ready
+python3 scripts/deploy_production.py --skip-backup --no-build
 ```
 
-Если порт `443`, `:443` можно не указывать.
+Bootstrap credentials являются временным секретом первого запуска. Существующий администратор хранится в PostgreSQL; удаление bootstrap-пары не удаляет пользователя.
 
-## Android production release
+## 10. Production monitoring
 
-Release Android должен использовать тот же HTTPS origin:
+Скопируйте публичный root CA:
 
 ```bash
-./android/gradlew -p android :app:assembleRelease \
-  -PCEH_API_BASE_URL=https://<REAL_PUBLIC_IP>:<REAL_HTTPS_PORT>/
+sudo mkdir -p /etc/ceh-sklad
+sudo cp ~/.ceh-sklad/tls/ceh-sklad-root-ca.crt /etc/ceh-sklad/ceh-sklad-root-ca.crt
+sudo chmod 644 /etc/ceh-sklad/ceh-sklad-root-ca.crt
 ```
 
-Рекомендуемый путь — workflow `Подписанный Android release`. Перед декодированием keystore он вызывает `scripts/verify_release_backend.py`, который принимает HTTPS origin с IP и портом и требует точное совпадение backend version + Alembic head.
+`deploy/systemd/ceh-monitor.service` задаёт:
 
-Web-панель при production Docker build получает `VITE_API_BASE_URL=${CEH_PUBLIC_ORIGIN}/api/v1`; HTTP URL запрещён.
+```text
+CEH_MONITOR_CA_CERT=/etc/ceh-sklad/ceh-sklad-root-ca.crt
+```
 
-## База данных, backup и monitoring
+и monitor выполняет TLS verification через этот CA.
 
-- PostgreSQL хранится в volume `ceh_postgres` и не публикуется наружу.
-- `deploy_production.py` делает backup перед обычным обновлением уже работающей БД.
-- `scripts/backup.sh --production` валидирует custom-format dump, формирует SHA-256 и metadata.
-- `scripts/backup_offsite.sh` отправляет проверенный backup во внешний каталог или `rclone` remote.
-- `scripts/production_monitor.py` должен быть настроен на фактический `https://IP:PORT` origin.
-- restore drill выполняется в отдельной БД/контуре, не поверх production.
+## 11. Backup и disaster recovery PKI
 
-## Проверка после развертывания
+PostgreSQL backup выполняется обычными скриптами `backup.sh --production` и `backup_offsite.sh`.
 
-1. `GET /health` возвращает `status=ok` через HTTPS по IP:port.
-2. `GET /health/ready` возвращает `status=ready`, `database=ok`, версию и текущую Alembic revision.
-3. TLS-сертификат публично доверен и содержит фактический IP в SAN.
-4. Вход администратора работает с новым постоянным паролем, `BOOTSTRAP_ADMIN_*` отсутствуют в production env.
-5. Web-панель использует production IP:port и не содержит localhost API.
-6. WebSocket `wss://IP:PORT/api/v1/realtime` работает без токена в URL.
-7. Порты `5432` и `8000` недоступны извне.
-8. TCP `80` доходит только до Caddy и остаётся доступным для автоматического ACME renewal.
-9. Backup + off-site + restore drill и production monitoring проверены.
-10. После этого выполняются подписанный Android release и physical-device UAT.
+Кроме БД необходимо сохранить возможность восстановить Caddy internal PKI. Потеря `caddy_data` означает создание нового CA, после чего старые клиентские trust stores перестанут доверять серверу. Поэтому snapshot/backup production host должен включать persistent Caddy data/PKI либо отдельную защищённую копию этого volume.
+
+Root certificate можно распространять публично, **private key Caddy CA должен оставаться секретным**.
+
+## 12. Проверка внешней сети
+
+С другой сети проверьте:
+
+```text
+PUBLIC_IP:40022  доступен только для SSH
+PUBLIC_IP:40443  доступен для приложения
+PUBLIC_IP:5432   закрыт
+PUBLIC_IP:8000   закрыт
+```
+
+Стандартные `80/443`, принадлежащие другой инфраструктуре, не участвуют в работе `ceh-sklad`.
+
+## 13. Android production release
+
+После server UAT:
+
+1. экспортируйте root CA;
+2. добавьте `CEH_INTERNAL_CA_CERT_BASE64` в GitHub Secrets;
+3. создайте/загрузите Android signing secrets;
+4. запустите `Подписанный Android release` с:
+
+```text
+https://PUBLIC_IP:40443/
+```
+
+Workflow сначала проверяет backend version/schema/TLS через указанный root CA, только затем декодирует keystore и собирает подписанные APK/AAB.
+
+## 14. Итоговый production checklist
+
+1. `/health` = `ok` через `https://IP:PORT`.
+2. `/health/ready` = `ready`, PostgreSQL `ok`, версия и Alembic revision верны.
+3. Browser/Android доверяют именно ожидаемому root CA.
+4. Root CA fingerprint сверён.
+5. Внешние `5432` и `8000` закрыты.
+6. Bootstrap credentials удалены после смены пароля.
+7. Backup + off-site + restore drill выполнены.
+8. Caddy PKI включён в disaster-recovery план.
+9. Monitor работает с `CEH_MONITOR_CA_CERT`.
+10. Подписанный Android release и physical-device UAT завершены.
 
 Полная последовательность допуска описана в `docs/GO_LIVE.md`.

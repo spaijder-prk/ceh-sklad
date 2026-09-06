@@ -79,7 +79,7 @@ jobs:
           pip install -r requirements.lock
           pip install --no-deps -e '.[dev]'
       - name: Проверить синтаксис
-        run: python -m compileall app tests alembic ../scripts/load_test.py ../scripts/staging_smoke.py ../scripts/production_monitor.py
+        run: python -m compileall app tests alembic ../scripts/load_test.py ../scripts/staging_smoke.py ../scripts/production_monitor.py ../scripts/export_internal_ca.py
       - name: Применить миграции
         run: alembic upgrade head
       - name: Выполнить интеграционные тесты
@@ -188,10 +188,10 @@ jobs:
     env:
       CEH_PUBLIC_IP: 203.0.113.10
       CEH_PUBLIC_HOST: 203.0.113.10
-      CEH_PUBLIC_PORT: "8443"
-      CEH_PUBLIC_ORIGIN: https://203.0.113.10:8443
-      CEH_PUBLIC_WS_ORIGIN: wss://203.0.113.10:8443
-      ACME_EMAIL: ci@example.invalid
+      CEH_PUBLIC_PORT: "40443"
+      CEH_PUBLIC_ORIGIN: https://203.0.113.10:40443
+      CEH_PUBLIC_WS_ORIGIN: wss://203.0.113.10:40443
+      CEH_TLS_MODE: internal-ca
       POSTGRES_PASSWORD: ci-postgres-password
       DATABASE_URL: postgresql+asyncpg://ceh:ci-postgres-password@db:5432/ceh_sklad
       JWT_SECRET: ci-production-secret-not-for-real-use-1234567890
@@ -207,15 +207,12 @@ jobs:
         run: docker build -f admin-web/Dockerfile.dev -t ceh-sklad-admin-web-dev-ci ./admin-web
       - name: Проверить итоговую production-конфигурацию
         run: docker compose -f docker-compose.production.yml config > /tmp/ceh-production-compose.yml
-      - name: Проверить Caddyfile для IP:port
+      - name: Проверить Caddyfile для IP:port с internal CA
         run: >-
           docker run --rm
-          -e CEH_PUBLIC_IP=203.0.113.10
           -e CEH_PUBLIC_HOST=203.0.113.10
-          -e CEH_PUBLIC_PORT=8443
-          -e CEH_PUBLIC_ORIGIN=https://203.0.113.10:8443
-          -e CEH_PUBLIC_WS_ORIGIN=wss://203.0.113.10:8443
-          -e ACME_EMAIL=ci@example.invalid
+          -e CEH_PUBLIC_ORIGIN=https://203.0.113.10:40443
+          -e CEH_PUBLIC_WS_ORIGIN=wss://203.0.113.10:40443
           -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro"
           caddy:2.11.3-alpine
           caddy validate --config /etc/caddy/Caddyfile
@@ -224,7 +221,7 @@ jobs:
           docker build -t ceh-sklad-backend-ci ./backend
           test "$(docker inspect -f '{{.Config.User}}' ceh-sklad-backend-ci)" = "ceh"
       - name: Собрать production web-контейнер
-        run: docker build --build-arg VITE_API_BASE_URL=https://203.0.113.10:8443/api/v1 -t ceh-sklad-admin-web-ci ./admin-web
+        run: docker build --build-arg VITE_API_BASE_URL=https://203.0.113.10:40443/api/v1 -t ceh-sklad-admin-web-ci ./admin-web
 
   summary:
     name: Итоговая проверка проекта

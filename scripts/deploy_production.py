@@ -2,17 +2,18 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import ipaddress
 import json
 import os
+import socket
 import ssl
 import stat
 import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -169,12 +170,50 @@ def read_caddy_root_ca(timeout: float = 45.0) -> str:
     raise RuntimeError(f"Не удалось получить root CA Caddy: {last_error}")
 
 
-def _get_json(url: str, timeout: float, context: ssl.SSLContext) -> dict[str, object]:
-    request = Request(url, headers={"Accept": "application/json", "User-Agent": "ceh-sklad-deploy/0.4"})
-    with urlopen(request, timeout=timeout, context=context) as response:  # noqa: S310 - URL собран из проверенного public IP/port
-        payload = json.load(response)
+def _get_json_local_tls(
+    base_url: str,
+    path: str,
+    timeout: float,
+    context: ssl.SSLContext,
+    *,
+    connect_host: str = "127.0.0.1",
+) -> dict[str, object]:
+    parsed = urlsplit(base_url)
+    server_name = parsed.hostname
+    if not server_name:
+        raise RuntimeError("production origin не содержит hostname/IP")
+    port = parsed.port or 443
+    host_header = parsed.netloc
+
+    raw_socket = socket.create_connection((connect_host, port), timeout=timeout)
+    try:
+        tls_socket = context.wrap_socket(raw_socket, server_hostname=server_name)
+        try:
+            request = (
+                f"GET {path} HTTP/1.1\r\n"
+                f"Host: {host_header}\r\n"
+                "Accept: application/json\r\n"
+                "User-Agent: ceh-sklad-deploy/0.4\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode("ascii")
+            tls_socket.sendall(request)
+            response = http.client.HTTPResponse(tls_socket)
+            response.begin()
+            raw = response.read()
+            if response.status != 200:
+                raise RuntimeError(f"{path} вернул HTTP {response.status}")
+        finally:
+            tls_socket.close()
+    except Exception:
+        raw_socket.close()
+        raise
+
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"{path} вернул некорректный JSON") from exc
     if not isinstance(payload, dict):
-        raise RuntimeError(f"{url} вернул не JSON-объект")
+        raise RuntimeError(f"{path} вернул не JSON-объект")
     return payload
 
 
@@ -191,8 +230,8 @@ def wait_for_readiness(
 
     while time.monotonic() < deadline:
         try:
-            live = _get_json(f"{base_url}/health", min(10.0, timeout), context)
-            ready = _get_json(f"{base_url}/health/ready", min(10.0, timeout), context)
+            live = _get_json_local_tls(base_url, "/health", min(10.0, timeout), context)
+            ready = _get_json_local_tls(base_url, "/health/ready", min(10.0, timeout), context)
             if live.get("status") != "ok":
                 raise RuntimeError(f"liveness status={live.get('status')!r}")
             if ready.get("status") != "ready" or ready.get("database") != "ok":
@@ -209,11 +248,11 @@ def wait_for_readiness(
             if not ready.get("schema_revision"):
                 raise RuntimeError("readiness не вернул schema_revision")
             return ready
-        except (HTTPError, URLError, TimeoutError, OSError, ValueError, RuntimeError, ssl.SSLError) as exc:
+        except (TimeoutError, OSError, ValueError, RuntimeError, ssl.SSLError) as exc:
             last_error = exc
             time.sleep(3)
 
-    raise RuntimeError(f"HTTPS readiness не стала готовой за {timeout:.0f} с: {last_error}")
+    raise RuntimeError(f"Локальная HTTPS readiness не стала готовой за {timeout:.0f} с: {last_error}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -274,7 +313,7 @@ def main() -> int:
 
         print("2/6 Проверяю production endpoint IP:port...")
         print(f"Endpoint: {base_url} (IP={ip}, HTTPS port={port}, TLS=internal-ca)")
-        print("Внешние TCP 80/443 для сертификата не требуются; NAT должен пробрасывать только выбранный HTTPS-порт.")
+        print("Внешние TCP 80/443 не требуются. NAT должен пробрасывать только выбранный HTTPS-порт.")
 
         if args.check_only:
             print(
@@ -298,19 +337,19 @@ def main() -> int:
             up_args.append("--build")
         run_command(compose_command(*up_args))
 
-        print("5/6 Получаю root CA Caddy и ожидаю внешний HTTPS health/readiness...")
+        print("5/6 Получаю root CA и проверяю локальный HTTPS без зависимости от NAT loopback...")
         root_ca_pem = read_caddy_root_ca(min(45.0, args.timeout))
         ready = wait_for_readiness(base_url, expected_version, args.timeout, root_ca_pem)
 
         print("6/6 Проверяю состояние контейнеров...")
         run_command(compose_command("ps"))
         print(
-            "Production готов: "
+            "Production локально готов: "
             f"{base_url}, version={expected_version}, schema={ready.get('schema_revision')}"
         )
         print(
-            "Следующий шаг: экспортировать root CA командой scripts/export_internal_ca.py, "
-            "установить его на доверенные компьютеры/Android, затем войти bootstrap-администратором."
+            "Deployment намеренно не зависит от NAT hairpin. Следующий шаг: экспортировать root CA, "
+            "установить его на клиент и проверить https://IP:PORT с другой сети."
         )
         return 0
     except (RuntimeError, subprocess.CalledProcessError) as exc:

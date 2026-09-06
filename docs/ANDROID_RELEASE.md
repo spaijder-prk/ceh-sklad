@@ -73,15 +73,19 @@ CEH_ANDROID_KEY_PASSWORD
 2. требует уже завершенный зеленый workflow `Проверка проекта` на том же commit;
 3. использует Python 3.12 и повторно выполняет release-contract тесты;
 4. проверяет, что `api_base_url` — HTTPS origin без credentials/path/query;
-5. декодирует keystore только во временный каталог runner;
-6. собирает подписанные APK и AAB;
-7. проверяет APK через `apksigner` и AAB через `jarsigner`;
-8. формирует `android-release-manifest.json` с SHA-256 APK, fingerprint сертификата, package/version, backend URL и source commit;
-9. формирует `SHA256SUMS.txt` для APK, AAB и manifest;
-10. независимо перепроверяет подготовленный пакет через `scripts/verify_android_release.py`;
-11. запрещает повторную публикацию существующего `android-v<versionName>`;
-12. публикует постоянный GitHub Release с именованными APK/AAB, manifest и контрольными суммами;
-13. удаляет временный keystore через `always()`.
+5. **до декодирования keystore** выполняет `scripts/verify_release_backend.py`: `/health/ready` обязан вернуть `ready/ok`, точную версию из `VERSION` и единственный актуальный Alembic head из репозитория;
+6. сохраняет JSON-отчет проверки backend как CI artifact даже при отказе release-gate;
+7. декодирует keystore только во временный каталог runner;
+8. собирает подписанные APK и AAB;
+9. проверяет APK через `apksigner` и AAB через `jarsigner`;
+10. формирует `android-release-manifest.json` с SHA-256 APK, fingerprint сертификата, package/version, backend URL и source commit;
+11. формирует `SHA256SUMS.txt` для APK, AAB и manifest;
+12. независимо перепроверяет подготовленный пакет через `scripts/verify_android_release.py`;
+13. запрещает повторную публикацию существующего `android-v<versionName>`;
+14. публикует постоянный GitHub Release с именованными APK/AAB, manifest и контрольными суммами;
+15. удаляет временный keystore через `always()`.
+
+Backend verifier выполняет только HTTPS `GET /health/ready`, не использует секреты и не изменяет данные. Он fail-closed также при redirect, ошибке сети/HTTP, некорректном JSON, нескольких Alembic heads или несовпадении схемы/версии.
 
 Перед следующим релизом необходимо увеличить `versionCode` и `versionName` в `android/app/build.gradle.kts`.
 
@@ -119,8 +123,9 @@ Verifier проверяет:
 1. Создать production signing key helper-скриптом и сохранить офлайн backup.
 2. Убедиться, что четыре `CEH_ANDROID_*` GitHub Secrets настроены.
 3. Развернуть backend на фактическом HTTPS-домене и получить зеленый общий CI на release commit.
-4. Запустить workflow `Подписанный Android release` с production HTTPS origin.
-5. Скачать APK/AAB/manifest/SHA256SUMS из GitHub Release и независимо выполнить verifier.
-6. Установить/обновить подписанный APK на физическом устройстве.
-7. Пройти login, остатки, retail/wholesale sale, возврат, сдачу денег и offline queue.
-8. Не менять signing key между обновлениями приложения.
+4. Убедиться, что production `/health/ready` уже показывает ту же версию продукта и Alembic head, что текущий `main`.
+5. Запустить workflow `Подписанный Android release` с production HTTPS origin.
+6. Скачать APK/AAB/manifest/SHA256SUMS из GitHub Release и независимо выполнить verifier.
+7. Установить/обновить подписанный APK на физическом устройстве.
+8. Пройти login, остатки, retail/wholesale sale, возврат, сдачу денег и offline queue.
+9. Не менять signing key между обновлениями приложения.

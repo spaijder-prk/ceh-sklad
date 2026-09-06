@@ -2,11 +2,10 @@ import { expect, test, type Route } from '@playwright/test'
 
 const API = 'http://localhost:8000/api/v1'
 
-async function json(route: Route, body: unknown, status = 200, headers: Record<string, string> = {}) {
+async function json(route: Route, body: unknown, status = 200) {
   await route.fulfill({
     status,
     contentType: 'application/json',
-    headers,
     body: JSON.stringify(body),
   })
 }
@@ -26,22 +25,30 @@ test('администратор входит через cookie-сессию б�
     }
     if (path === '/auth/web-login' && route.request().method() === 'POST') {
       authenticated = true
-      return json(
-        route,
-        { message: 'Браузерная сессия создана' },
-        200,
-        { 'set-cookie': 'ceh_session=test-session; HttpOnly; Path=/; SameSite=Strict, ceh_csrf=e2e-csrf; Path=/; SameSite=Strict' },
-      )
+      await page.context().addCookies([
+        {
+          name: 'ceh_session',
+          value: 'test-session',
+          domain: 'localhost',
+          path: '/',
+          httpOnly: true,
+          sameSite: 'Strict',
+        },
+        {
+          name: 'ceh_csrf',
+          value: 'e2e-csrf',
+          domain: 'localhost',
+          path: '/',
+          sameSite: 'Strict',
+        },
+      ])
+      return json(route, { message: 'Браузерная сессия создана' })
     }
     if (path === '/auth/web-logout' && route.request().method() === 'POST') {
       expect(route.request().headers()['x-csrf-token']).toBe('e2e-csrf')
       authenticated = false
-      return json(
-        route,
-        { message: 'Браузерная сессия завершена' },
-        200,
-        { 'set-cookie': 'ceh_session=; Max-Age=0; Path=/, ceh_csrf=; Max-Age=0; Path=/' },
-      )
+      await page.context().clearCookies()
+      return json(route, { message: 'Браузерная сессия завершена' })
     }
 
     const emptyLists = new Set([
@@ -61,6 +68,8 @@ test('администратор входит через cookie-сессию б�
 
   await expect(page.getByText('Панель администратора')).toBeVisible()
   expect(await page.evaluate(() => localStorage.getItem('ceh-token'))).toBeNull()
+  expect(await page.evaluate(() => document.cookie)).toContain('ceh_csrf=e2e-csrf')
+  expect(await page.evaluate(() => document.cookie)).not.toContain('ceh_session=')
 
   await expect.poll(() => websocketUrls.filter((url) => url.includes('/api/v1/realtime')).length).toBeGreaterThan(0)
   const applicationWebSocket = websocketUrls.find((url) => url.includes('/api/v1/realtime'))

@@ -134,7 +134,7 @@ jobs:
           python scripts/release_preflight.py "${args[@]}"
       - name: Сохранить release preflight
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: staging-release-preflight
           path: ${{ runner.temp }}/staging-release-preflight.json
@@ -193,7 +193,7 @@ jobs:
           --execute
       - name: Сохранить результаты load-test
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: staging-load-test-results
           path: |

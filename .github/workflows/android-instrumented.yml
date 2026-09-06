@@ -84,7 +84,7 @@ jobs:
             test ! -f "$GITHUB_WORKSPACE/android-smoke-failed"
       - name: Сохранить диагностику smoke-теста
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ceh-sklad-android-smoke
           path: |

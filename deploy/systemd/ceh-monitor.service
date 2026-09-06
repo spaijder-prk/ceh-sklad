@@ -8,6 +8,7 @@ Type=oneshot
 WorkingDirectory=/opt/ceh-sklad
 EnvironmentFile=/opt/ceh-sklad/.env.production
 EnvironmentFile=-/etc/ceh-sklad/monitor.env
+Environment=CEH_MONITOR_CA_CERT=/etc/ceh-sklad/ceh-sklad-root-ca.crt
 ExecStart=/usr/bin/python3 /opt/ceh-sklad/scripts/production_monitor.py
 NoNewPrivileges=true
 PrivateTmp=true

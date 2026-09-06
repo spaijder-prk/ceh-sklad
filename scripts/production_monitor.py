@@ -9,19 +9,30 @@ import sys
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 
+def _validated_https_origin(value: str, variable: str) -> str:
+    configured = value.strip().rstrip("/")
+    if not configured:
+        raise ValueError(f"Не задан {variable}")
+    parsed = urlsplit(configured)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError(f"{variable} должен быть полноценным HTTPS origin")
+    if parsed.username or parsed.password or parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+        raise ValueError(f"{variable} должен быть HTTPS origin без credentials/path/query/fragment")
+    return configured
+
+
 def _base_url() -> str:
-    configured = os.environ.get("CEH_MONITOR_BASE_URL", "").strip().rstrip("/")
-    if configured:
-        if not configured.startswith("https://"):
-            raise ValueError("CEH_MONITOR_BASE_URL должен использовать HTTPS")
-        return configured
-    domain = os.environ.get("CEH_DOMAIN", "").strip()
-    if not domain:
-        raise ValueError("Не задан CEH_DOMAIN или CEH_MONITOR_BASE_URL")
-    return f"https://{domain}"
+    explicit = os.environ.get("CEH_MONITOR_BASE_URL", "")
+    if explicit.strip():
+        return _validated_https_origin(explicit, "CEH_MONITOR_BASE_URL")
+    public_origin = os.environ.get("CEH_PUBLIC_ORIGIN", "")
+    if public_origin.strip():
+        return _validated_https_origin(public_origin, "CEH_PUBLIC_ORIGIN")
+    raise ValueError("Не задан CEH_MONITOR_BASE_URL или CEH_PUBLIC_ORIGIN")
 
 
 def _get_json(url: str) -> dict:
@@ -84,6 +95,7 @@ def main() -> int:
             errors.append("/health не вернул status=ok")
         if ready.get("status") != "ready" or ready.get("database") != "ok":
             errors.append("/health/ready не подтвердил готовность PostgreSQL")
+        details["base_url"] = base_url
         details["version"] = health.get("version")
         details["schema_revision"] = ready.get("schema_revision")
     except (HTTPError, URLError, TimeoutError, ValueError, RuntimeError, json.JSONDecodeError) as exc:

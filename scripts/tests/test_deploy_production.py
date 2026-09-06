@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import socket
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,41 +17,56 @@ spec.loader.exec_module(module)
 
 
 class DeployProductionTests(unittest.TestCase):
-    def test_parse_env_and_domain(self) -> None:
+    def test_parse_env_and_public_endpoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ".env.production"
             path.write_text(
-                "# comment\nCEH_DOMAIN=sklad.example.org\nAPP_NAME='Цех Склад'\n",
+                "# comment\n"
+                "CEH_PUBLIC_IP=93.184.216.34\n"
+                "CEH_PUBLIC_HOST=93.184.216.34\n"
+                "CEH_PUBLIC_PORT=8443\n"
+                "CEH_PUBLIC_ORIGIN=https://93.184.216.34:8443\n"
+                "CEH_PUBLIC_WS_ORIGIN=wss://93.184.216.34:8443\n"
+                "APP_NAME='Цех Склад'\n",
                 encoding="utf-8",
             )
             values = module.parse_env_file(path)
-        self.assertEqual(values["CEH_DOMAIN"], "sklad.example.org")
         self.assertEqual(values["APP_NAME"], "Цех Склад")
-        self.assertEqual(module.validate_domain(values["CEH_DOMAIN"]), "sklad.example.org")
+        self.assertEqual(
+            module.validate_public_endpoint(values),
+            ("93.184.216.34", 8443, "https://93.184.216.34:8443"),
+        )
 
-    def test_domain_rejects_test_values(self) -> None:
-        for value in ("localhost", "https://sklad.example.org", "ci.invalid", "example.com"):
-            with self.subTest(value=value), self.assertRaises(RuntimeError):
-                module.validate_domain(value)
+    def test_public_endpoint_rejects_private_ip_and_drift(self) -> None:
+        private_env = {
+            "CEH_PUBLIC_IP": "192.168.1.10",
+            "CEH_PUBLIC_HOST": "192.168.1.10",
+            "CEH_PUBLIC_PORT": "8443",
+            "CEH_PUBLIC_ORIGIN": "https://192.168.1.10:8443",
+            "CEH_PUBLIC_WS_ORIGIN": "wss://192.168.1.10:8443",
+        }
+        with self.assertRaisesRegex(RuntimeError, "публичным"):
+            module.validate_public_endpoint(private_env)
 
-    def test_resolve_domain_returns_unique_addresses(self) -> None:
-        records = [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("203.0.113.10", 443)),
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("203.0.113.10", 443)),
-            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:db8::10", 443, 0, 0)),
-        ]
-        with mock.patch.object(module.socket, "getaddrinfo", return_value=records):
-            addresses = module.resolve_domain("sklad.example.org")
-        self.assertEqual(addresses, ("2001:db8::10", "203.0.113.10"))
+        drift_env = {
+            "CEH_PUBLIC_IP": "93.184.216.34",
+            "CEH_PUBLIC_HOST": "93.184.216.34",
+            "CEH_PUBLIC_PORT": "8443",
+            "CEH_PUBLIC_ORIGIN": "https://93.184.216.34:9443",
+            "CEH_PUBLIC_WS_ORIGIN": "wss://93.184.216.34:8443",
+        }
+        with self.assertRaisesRegex(RuntimeError, "CEH_PUBLIC_ORIGIN"):
+            module.validate_public_endpoint(drift_env)
 
-    def test_resolve_domain_rejects_dns_failure(self) -> None:
-        with mock.patch.object(
-            module.socket,
-            "getaddrinfo",
-            side_effect=socket.gaierror(-2, "Name or service not known"),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "DNS"):
-                module.resolve_domain("sklad.example.org")
+    def test_public_port_rejects_http_port(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "ACME HTTP-01"):
+            module.validate_public_port("80")
+
+    def test_ipv6_origin_uses_brackets(self) -> None:
+        self.assertEqual(
+            module.public_origins("2606:4700:4700::1111", 9443),
+            ("https://[2606:4700:4700::1111]:9443", "wss://[2606:4700:4700::1111]:9443"),
+        )
 
     def test_compose_command_is_pinned_to_production_files(self) -> None:
         self.assertEqual(
@@ -73,7 +87,7 @@ class DeployProductionTests(unittest.TestCase):
     def test_env_permissions_reject_group_read(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ".env.production"
-            path.write_text("CEH_DOMAIN=sklad.example.org\n", encoding="utf-8")
+            path.write_text("CEH_PUBLIC_IP=93.184.216.34\n", encoding="utf-8")
             path.chmod(0o640)
             with self.assertRaises(RuntimeError):
                 module.validate_env_permissions(path)
@@ -91,7 +105,7 @@ class DeployProductionTests(unittest.TestCase):
             },
         ]
         with mock.patch.object(module, "_get_json", side_effect=responses):
-            ready = module.wait_for_readiness("sklad.example.org", "0.4.0", 1.0)
+            ready = module.wait_for_readiness("https://93.184.216.34:8443", "0.4.0", 1.0)
         self.assertEqual(ready["schema_revision"], "20260904_09")
 
     def test_wait_for_readiness_reports_database_state(self) -> None:
@@ -108,7 +122,7 @@ class DeployProductionTests(unittest.TestCase):
             module.time, "sleep", return_value=None
         ), mock.patch.object(module.time, "monotonic", side_effect=[0.0, 0.0, 2.0]):
             with self.assertRaisesRegex(RuntimeError, "database='down'"):
-                module.wait_for_readiness("sklad.example.org", "0.4.0", 1.0)
+                module.wait_for_readiness("https://93.184.216.34:8443", "0.4.0", 1.0)
 
     def test_wait_for_readiness_rejects_wrong_version(self) -> None:
         responses = [
@@ -124,7 +138,7 @@ class DeployProductionTests(unittest.TestCase):
             module.time, "sleep", return_value=None
         ), mock.patch.object(module.time, "monotonic", side_effect=[0.0, 0.0, 2.0]):
             with self.assertRaises(RuntimeError):
-                module.wait_for_readiness("sklad.example.org", "0.4.0", 1.0)
+                module.wait_for_readiness("https://93.184.216.34:8443", "0.4.0", 1.0)
 
 
 if __name__ == "__main__":

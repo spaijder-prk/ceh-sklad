@@ -18,11 +18,13 @@ class VerifyAndroidReleaseTests(unittest.TestCase):
         apk = root / "ceh-sklad-0.4.0.apk"
         aab = root / "ceh-sklad-0.4.0.aab"
         manifest_path = root / "android-release-manifest.json"
+        ca_cert = root / "ceh-sklad-root-ca.crt"
         checksums = root / "SHA256SUMS.txt"
         apksigner = root / "apksigner"
 
         apk.write_bytes(b"apk-release-payload")
         aab.write_bytes(b"aab-release-payload")
+        ca_cert.write_text("test-public-root-ca\n", encoding="utf-8")
         apksigner.write_text("#!/bin/sh\n", encoding="utf-8")
 
         source_commit = "1" * 40
@@ -35,7 +37,7 @@ class VerifyAndroidReleaseTests(unittest.TestCase):
             "application_id": "ru.ceh.sklad",
             "version_code": 1,
             "version_name": "0.4.0",
-            "api_base_url": "https://sklad.company.ru/",
+            "api_base_url": "https://93.184.216.34:40443/",
             "source_commit": source_commit,
             "generated_at_utc": "2026-09-05T00:00:00+00:00",
         }
@@ -49,6 +51,7 @@ class VerifyAndroidReleaseTests(unittest.TestCase):
                     f"{verifier.sha256_file(apk)}  {apk.name}",
                     f"{verifier.sha256_file(aab)}  {aab.name}",
                     f"{verifier.sha256_file(manifest_path)}  {manifest_path.name}",
+                    f"{verifier.sha256_file(ca_cert)}  {ca_cert.name}",
                     "",
                 )
             ),
@@ -58,6 +61,7 @@ class VerifyAndroidReleaseTests(unittest.TestCase):
             "apk": apk,
             "aab": aab,
             "manifest": manifest_path,
+            "ca_cert": ca_cert,
             "checksums": checksums,
             "apksigner": apksigner,
             "source_commit": source_commit,
@@ -82,9 +86,10 @@ class VerifyAndroidReleaseTests(unittest.TestCase):
                 apk=data["apk"],
                 aab=data["aab"],
                 manifest_path=data["manifest"],
+                ca_cert=data["ca_cert"],
                 checksums_path=data["checksums"],
                 apksigner=data["apksigner"],
-                expected_api_base_url="https://sklad.company.ru",
+                expected_api_base_url="https://93.184.216.34:40443",
                 expected_source_commit=data["source_commit"],
                 command_runner=self._runner(data["signer_sha"]),
             )
@@ -93,6 +98,7 @@ class VerifyAndroidReleaseTests(unittest.TestCase):
             self.assertEqual(result["application_id"], "ru.ceh.sklad")
             self.assertEqual(result["version_name"], "0.4.0")
             self.assertEqual(result["source_commit"], data["source_commit"])
+            self.assertEqual(result["root_ca_sha256"], verifier.sha256_file(data["ca_cert"]))
 
     def test_tampered_apk_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -104,6 +110,7 @@ class VerifyAndroidReleaseTests(unittest.TestCase):
                     apk=data["apk"],
                     aab=data["aab"],
                     manifest_path=data["manifest"],
+                    ca_cert=data["ca_cert"],
                     checksums_path=data["checksums"],
                     apksigner=data["apksigner"],
                     command_runner=self._runner(data["signer_sha"]),
@@ -118,6 +125,7 @@ class VerifyAndroidReleaseTests(unittest.TestCase):
                     apk=data["apk"],
                     aab=data["aab"],
                     manifest_path=data["manifest"],
+                    ca_cert=data["ca_cert"],
                     checksums_path=data["checksums"],
                     apksigner=data["apksigner"],
                     command_runner=self._runner("cd" * 32),

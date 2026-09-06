@@ -58,6 +58,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   acceptance:
@@ -67,12 +68,47 @@ jobs:
     steps:
       - name: Получить код
         uses: actions/checkout@v4
+      - name: Проверить источник приёмки и обязательные зеленые CI gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "Staging-приёмка разрешена только с ветки main." >&2
+            exit 2
+          fi
+
+          MAIN_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          if [ "$MAIN_SHA" != "$GITHUB_SHA" ]; then
+            echo "HEAD main изменился после запуска workflow. Перезапустите приёмку с актуального main." >&2
+            exit 2
+          fi
+
+          PROJECT_CI_COUNT="$(
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=push&per_page=100" \
+              --jq '[.workflow_runs[] | select(.name == "Проверка проекта" and .status == "completed" and .conclusion == "success")] | length'
+          )"
+          if [ "$PROJECT_CI_COUNT" -lt 1 ]; then
+            echo "Для $GITHUB_SHA нет завершенного зеленого workflow «Проверка проекта»." >&2
+            exit 2
+          fi
+
+          RELEASE_CONTRACT_CI_COUNT="$(
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=push&per_page=100" \
+              --jq '[.workflow_runs[] | select(.name == "Проверка release-контрактов" and .status == "completed" and .conclusion == "success")] | length'
+          )"
+          if [ "$RELEASE_CONTRACT_CI_COUNT" -lt 1 ]; then
+            echo "Для $GITHUB_SHA нет завершенного зеленого workflow «Проверка release-контрактов»." >&2
+            exit 2
+          fi
       - name: Установить Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Установить зависимости
-        run: pip install -e './backend[dev]'
+      - name: Установить зафиксированные зависимости
+        run: |
+          pip install -r backend/requirements.lock
+          pip install --no-deps -e './backend[dev]'
       - name: Проверить входные параметры и secrets
         env:
           BASE_URL: ${{ inputs.base_url }}

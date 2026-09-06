@@ -67,6 +67,26 @@ class HardeningContractsTest(unittest.TestCase):
         self.assertIn("gh pr create", workflow)
         self.assertIn("pull-requests: write", workflow)
 
+    def test_staging_acceptance_uses_verified_main_and_locked_dependencies(self):
+        workflow = (ROOT / ".github/workflows/staging-acceptance.yml").read_text(encoding="utf-8")
+
+        required_fragments = (
+            "permissions:\n  contents: read\n  actions: read",
+            "refs/heads/main",
+            "git/ref/heads/main",
+            "Проверка проекта",
+            "Проверка release-контрактов",
+            "PROJECT_CI_COUNT",
+            "RELEASE_CONTRACT_CI_COUNT",
+            "pip install -r backend/requirements.lock",
+            "pip install --no-deps -e './backend[dev]'",
+        )
+        for fragment in required_fragments:
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, workflow)
+
+        self.assertNotIn("run: pip install -e './backend[dev]'", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
 
@@ -11,6 +12,7 @@ SCRIPT_PATH = SCRIPTS_DIR / "verify_release_backend.py"
 spec = importlib.util.spec_from_file_location("verify_release_backend", SCRIPT_PATH)
 assert spec and spec.loader
 verify = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = verify
 spec.loader.exec_module(verify)
 
 

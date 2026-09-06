@@ -94,6 +94,22 @@ class DeployProductionTests(unittest.TestCase):
             ready = module.wait_for_readiness("sklad.example.org", "0.4.0", 1.0)
         self.assertEqual(ready["schema_revision"], "20260904_09")
 
+    def test_wait_for_readiness_reports_database_state(self) -> None:
+        responses = [
+            {"status": "ok", "version": "0.4.0"},
+            {
+                "status": "starting",
+                "database": "down",
+                "version": "0.4.0",
+                "schema_revision": "20260904_09",
+            },
+        ]
+        with mock.patch.object(module, "_get_json", side_effect=responses), mock.patch.object(
+            module.time, "sleep", return_value=None
+        ), mock.patch.object(module.time, "monotonic", side_effect=[0.0, 0.0, 2.0]):
+            with self.assertRaisesRegex(RuntimeError, "database='down'"):
+                module.wait_for_readiness("sklad.example.org", "0.4.0", 1.0)
+
     def test_wait_for_readiness_rejects_wrong_version(self) -> None:
         responses = [
             {"status": "ok", "version": "0.3.9"},

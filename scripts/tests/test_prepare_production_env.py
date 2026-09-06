@@ -24,21 +24,30 @@ def parse_env(content: str) -> dict[str, str]:
 
 
 class PrepareProductionEnvTests(unittest.TestCase):
-    def test_domain_normalization(self) -> None:
-        self.assertEqual(prepare.normalize_domain(" Sklad.Company.RU. "), "sklad.company.ru")
+    def test_public_ip_and_port_normalization(self) -> None:
+        self.assertEqual(prepare.normalize_public_ip(" 93.184.216.34 "), "93.184.216.34")
+        self.assertEqual(
+            prepare.normalize_public_ip("[2606:4700:4700::1111]"),
+            "2606:4700:4700::1111",
+        )
+        self.assertEqual(prepare.normalize_port("8443"), 8443)
 
-        for value in (
-            "localhost",
-            "https://sklad.company.ru",
-            "sklad.company.ru/path",
-            "sklad.company.ru:443",
-            "ci.invalid",
-            "sklad.example",
-            "no-dot",
-            "-bad.company.ru",
-        ):
-            with self.subTest(value=value), self.assertRaises(SystemExit):
-                prepare.normalize_domain(value)
+        for value in ("localhost", "192.168.1.10", "10.0.0.1", "127.0.0.1", "203.0.113.10"):
+            with self.subTest(ip=value), self.assertRaises(SystemExit):
+                prepare.normalize_public_ip(value)
+        for value in (0, 80, 65536, "abc"):
+            with self.subTest(port=value), self.assertRaises(SystemExit):
+                prepare.normalize_port(value)
+
+    def test_origins_include_custom_port_and_ipv6_brackets(self) -> None:
+        self.assertEqual(
+            prepare.public_origins("93.184.216.34", 8443),
+            ("https://93.184.216.34:8443", "wss://93.184.216.34:8443"),
+        )
+        self.assertEqual(
+            prepare.public_origins("2606:4700:4700::1111", 443),
+            ("https://[2606:4700:4700::1111]", "wss://[2606:4700:4700::1111]"),
+        )
 
     def test_email_and_login_validation(self) -> None:
         self.assertEqual(prepare.validate_email(" ops@company.ru "), "ops@company.ru")
@@ -53,7 +62,7 @@ class PrepareProductionEnvTests(unittest.TestCase):
                 prepare.validate_login(value)
 
     def test_generated_env_matches_compose_contract(self) -> None:
-        content = prepare.build_env("sklad.company.ru", "ops@company.ru", "admin.prod")
+        content = prepare.build_env("93.184.216.34", 8443, "ops@company.ru", "admin.prod")
         env = parse_env(content)
 
         compose = COMPOSE_PATH.read_text(encoding="utf-8")
@@ -61,7 +70,11 @@ class PrepareProductionEnvTests(unittest.TestCase):
         missing = referenced - set(env)
         self.assertFalse(missing, f"Генератор не создаёт переменные Compose: {sorted(missing)}")
 
-        self.assertEqual(env["CEH_DOMAIN"], "sklad.company.ru")
+        self.assertEqual(env["CEH_PUBLIC_IP"], "93.184.216.34")
+        self.assertEqual(env["CEH_PUBLIC_HOST"], "93.184.216.34")
+        self.assertEqual(env["CEH_PUBLIC_PORT"], "8443")
+        self.assertEqual(env["CEH_PUBLIC_ORIGIN"], "https://93.184.216.34:8443")
+        self.assertEqual(env["CEH_PUBLIC_WS_ORIGIN"], "wss://93.184.216.34:8443")
         self.assertEqual(env["ACME_EMAIL"], "ops@company.ru")
         self.assertEqual(env["BOOTSTRAP_ADMIN_LOGIN"], "admin.prod")
         self.assertEqual(env["POSTGRES_USER"], "ceh")

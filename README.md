@@ -2,6 +2,8 @@
 
 Монорепозиторий системы складского учета для нескольких складов и торговых представителей с Android-клиентом, web-панелью и интеграцией с **1С:Управление нашей фирмой (УНФ) в облаке**.
 
+Текущая версия продукта: **0.4.0**.
+
 ## Что входит
 
 - `backend/` — FastAPI + PostgreSQL, транзакционное складское ядро, задолженность, роли, аудит, 1С/УНФ API;
@@ -9,7 +11,7 @@
 - `admin-web/` — панель администратора/руководителя;
 - `unf-bridge/` — отдельный bridge к облачной УНФ/1С:Фреш с metadata-driven mapping, dry-run, health и идемпотентным экспортом;
 - `docs/` — архитектура, production, backup/restore, staging и интеграция УНФ Cloud;
-- `scripts/` — backup/restore, load-test и staging smoke.
+- `scripts/` — production deploy, backup/restore, load-test, staging smoke и release-проверки.
 
 ## Основные правила учета
 
@@ -20,50 +22,6 @@
 - повторная доставка защищена идемпотентным `operation_key`;
 - розничная и оптовая цены хранятся отдельно;
 - каждому торговому представителю соответствует виртуальный склад `ceh-sklad`.
-
-## 1С:УНФ Cloud
-
-Универсальный обмен находится под `/api/v1/integration/1c`. Для целевой конфигурации УНФ Cloud дополнительно реализованы:
-
-- `GET /api/v1/integration/1c/unf/profile` — версия/профиль контракта;
-- `GET /api/v1/integration/1c/unf/outbox` — неподтвержденные операции с готовым сопоставлением документов УНФ;
-- `POST /api/v1/integration/1c/confirm-export` и batch-вариант — идемпотентное подтверждение после фактической записи документа в УНФ.
-
-Базовое сопоставление:
-
-- перемещения, выдача и возврат → `Перемещение запасов`;
-- продажа → `Расходная накладная`;
-- сдача выручки → `Поступление в кассу`;
-- положительная корректировка → `Оприходование запасов`;
-- отрицательная → `Списание запасов`;
-- смешанная корректировка помечается `requires_split=true` и разбивается bridge на два документа.
-
-Учетные данные облачной УНФ не хранятся в Android/web. Между `ceh-sklad` и конкретным облачным tenant используется `unf-bridge`. Для 1С:Фреш он получает фактические EntitySet/поля из `$metadata`, а не зашивает имена объектов конкретной версии УНФ.
-
-Безопасный порядок discovery/UAT:
-
-```bash
-# 1. Один read-only discovery с сервисными credentials из secret storage.
-ceh-unf-fresh-probe \
-  --url 'https://1cfresh.com/a/...' \
-  --details --all \
-  --snapshot /var/lib/ceh-unf/unf-metadata.json
-
-# 2. После заполнения non-secret mapping — offline-сверка без сети/credentials.
-ceh-unf-metadata-validate \
-  --mapping /etc/ceh-sklad/unf-tenant.json \
-  --snapshot /var/lib/ceh-unf/unf-metadata.json
-
-# 3. Статический бизнес-аудит mapping.
-ceh-unf-tenant-audit --mapping /etc/ceh-sklad/unf-tenant.json
-
-# 4. Перед записью — живая read-only проверка текущего tenant/backend/outbox.
-ceh-unf-fresh-health --mapping /etc/ceh-sklad/unf-tenant.json --limit 100
-```
-
-Metadata snapshot не содержит логин, пароль или Authorization headers, но раскрывает URL/структуру tenant и поэтому хранится как внутренний UAT artifact. Offline-validator возвращает SHA-256 exact snapshot и mapping; эти digest фиксируются в release record. Tenant-specific касса, статья ДДС, payer и другие обязательные справочники проверяются через конфигурируемые `reference_checks` без изменения bridge-кода.
-
-Подробности: `docs/INTEGRATION_UNF_CLOUD.md`, `docs/UNF_BRIDGE_RUNBOOK.md`, `docs/UNF_TENANT_CHECKLIST.md`. Реальное подключение tenant отслеживается в issue #8.
 
 ## Быстрый локальный запуск
 
@@ -80,6 +38,31 @@ docker compose up --build
 - web: `http://localhost:5173` при отдельном запуске Vite.
 
 Структура БД создается/обновляется только Alembic-миграциями.
+
+## Production
+
+Сначала безопасно создайте `.env.production`:
+
+```bash
+python scripts/prepare_production_env.py \
+  --domain sklad.example.ru \
+  --email admin@example.ru
+```
+
+После настройки DNS и открытия 80/443 production можно поднять одной командой:
+
+```bash
+python scripts/deploy_production.py
+```
+
+Скрипт проверяет права `.env.production`, валидирует Docker Compose, перед обновлением уже работающей БД делает production backup, запускает/обновляет контейнеры и ждёт внешнего HTTPS `/health` + `/health/ready` с версией из `VERSION`.
+
+Ручные команды остаются доступны и описаны в `docs/PRODUCTION.md`. Production backup/restore выполняются только с явным флагом:
+
+```bash
+./scripts/backup.sh --production
+./scripts/restore.sh --production backups/ceh_sklad_YYYYMMDD_HHMMSS.dump
+```
 
 ## Backend без Docker
 
@@ -138,6 +121,12 @@ Android поддерживает:
 - смену собственного пароля;
 - нейтральную обработку 401 и точный `Retry-After` при временной блокировке входа.
 
+## 1С:УНФ Cloud
+
+Универсальный обмен находится под `/api/v1/integration/1c`. Для целевой конфигурации УНФ Cloud дополнительно реализованы профиль, outbox и идемпотентное подтверждение экспорта. Учетные данные облачной УНФ не хранятся в Android/web; между `ceh-sklad` и конкретным облачным tenant используется `unf-bridge`.
+
+Подробности: `docs/INTEGRATION_UNF_CLOUD.md`, `docs/UNF_BRIDGE_RUNBOOK.md`, `docs/UNF_TENANT_CHECKLIST.md`. Реальное подключение tenant отслеживается в issue #8.
+
 ## Безопасность
 
 - роли `representative`, `admin`, `manager` проверяются сервером;
@@ -151,22 +140,20 @@ Android поддерживает:
 
 ## Эксплуатация
 
-- `/health` — liveness;
-- `/health/ready` — PostgreSQL + текущая Alembic revision;
+- `/health` — liveness + версия продукта;
+- `/health/ready` — PostgreSQL + текущая Alembic revision + версия продукта;
 - `/api/v1/system/status` — admin/manager: очередь обмена, ошибки 1С, временно заблокированные аккаунты и готовность сопоставлений УНФ;
 - backup/restore drill является частью CI;
 - `Staging-приемка` умеет read-only проверку УНФ Cloud и строгий `require_unf_ready`;
-- нагрузочный сценарий по умолчанию dry-run; реальные продажи требуют отдельного флага подтверждения;
-- Android emulator smoke автоматически запускается только для последнего Android/workflow commit, а main CI не тратит Android build на чистые bridge/docs-коммиты в PR.
+- нагрузочный сценарий по умолчанию dry-run; реальные продажи требуют отдельного флага подтверждения.
 
-## Production
-
-См.:
+## Документация запуска
 
 - `docs/PRODUCTION.md`;
+- `docs/BACKUP.md`;
 - `docs/RELEASE_CHECKLIST.md`;
 - `docs/STAGING_ACCEPTANCE.md`;
 - `docs/INTEGRATION_UNF_CLOUD.md`;
 - `docs/UNF_BRIDGE_RUNBOOK.md`.
 
-Основная разработка теперь ведётся из `main`; ранее разошедшиеся истории `main` и `feature/bazovoe-yadro` консолидированы merge-коммитом `57826395b27e29928ebcd8aeccdf9a1c5afb5fd5` без потери истории. До фактического production-релиза остаются внешние шаги из issues #7 и #8: реальный HTTPS deployment, подписанный Android release/проверка на физическом устройстве и UAT с настоящим tenant УНФ.
+Основная разработка ведётся из `main`. До фактического production-релиза остаются внешние шаги из issues #7 и #8: реальный HTTPS deployment, подписанный Android release/проверка на физическом устройстве и UAT с настоящим tenant УНФ.

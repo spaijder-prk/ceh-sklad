@@ -1,0 +1,14 @@
+[Unit]
+Description=Проверенная off-site резервная копия Цех Склад
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/ceh-sklad
+EnvironmentFile=-/etc/ceh-sklad/backup.env
+ExecStart=/opt/ceh-sklad/scripts/backup_offsite.sh
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

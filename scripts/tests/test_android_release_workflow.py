@@ -32,6 +32,10 @@ class AndroidReleaseContractTests(unittest.TestCase):
             "PROJECT_CI_COUNT",
             "RELEASE_CONTRACT_CI_COUNT",
             'python -m unittest discover -s scripts/tests -p "test_*.py" -v',
+            "verify_release_backend.py",
+            "Проверить production backend перед подписью",
+            "android-release-backend.json",
+            "android-release-backend-preflight-${{ github.run_id }}",
             ":app:assembleRelease",
             ":app:bundleRelease",
             "apksigner",
@@ -52,6 +56,10 @@ class AndroidReleaseContractTests(unittest.TestCase):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, workflow)
 
+        self.assertLess(
+            workflow.index("Проверить production backend перед подписью"),
+            workflow.index("Подготовить keystore"),
+        )
         self.assertNotIn("--clobber", workflow)
         self.assertIn("CEH_ANDROID_KEYSTORE_BASE64", workflow)
         self.assertIn("CEH_ANDROID_KEYSTORE_PASSWORD", workflow)

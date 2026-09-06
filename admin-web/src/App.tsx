@@ -63,6 +63,9 @@ type IntegrationLog = {
 }
 
 const API = 'http://localhost:8000/api/v1'
+const CSRF_COOKIE = 'ceh_csrf'
+const CSRF_HEADER = 'X-CSRF-Token'
+const mutatingMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
 const stockKindLabel: Record<string, string> = {
   transfer: 'Перемещение',
@@ -82,8 +85,18 @@ function formatDate(value: string) {
   return new Date(value).toLocaleString('ru-RU')
 }
 
+function cookieValue(name: string): string | null {
+  const prefix = `${encodeURIComponent(name)}=`
+  for (const part of document.cookie.split(';')) {
+    const value = part.trim()
+    if (value.startsWith(prefix)) return decodeURIComponent(value.slice(prefix.length))
+  }
+  return null
+}
+
 export default function App() {
-  const [token, setToken] = useState(() => localStorage.getItem('ceh-token') ?? '')
+  const [sessionChecked, setSessionChecked] = useState(false)
+  const [authenticated, setAuthenticated] = useState(false)
   const [login, setLogin] = useState('')
   const [password, setPassword] = useState('')
   const [currentPassword, setCurrentPassword] = useState('')
@@ -102,43 +115,8 @@ export default function App() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
-  async function api<T>(path: string, options: RequestInit = {}, currentToken = token): Promise<T> {
-    const headers = new Headers(options.headers)
-    if (currentToken) headers.set('Authorization', `Bearer ${currentToken}`)
-    if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
-    const response = await fetch(`${API}${path}`, { ...options, headers })
-    if (response.status === 401) {
-      signOut()
-      throw new Error('Сессия завершена')
-    }
-    if (!response.ok) throw new Error(await responseErrorMessage(response))
-    return response.json() as Promise<T>
-  }
-
-  async function signIn(event: FormEvent) {
-    event.preventDefault()
-    setError('')
-    try {
-      const response = await fetch(`${API}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ login, password }),
-      })
-      if (!response.ok) {
-        const fallback = response.status === 401 ? 'Неверный логин или пароль' : undefined
-        throw new Error(await responseErrorMessage(response, fallback))
-      }
-      const data = await response.json() as { access_token: string }
-      localStorage.setItem('ceh-token', data.access_token)
-      setToken(data.access_token)
-    } catch (e) {
-      setError(String(e).replace('Error: ', ''))
-    }
-  }
-
-  function signOut() {
-    localStorage.removeItem('ceh-token')
-    setToken('')
+  function clearSessionState() {
+    setAuthenticated(false)
     setCurrentUser(null)
     setStocks([])
     setLocations([])
@@ -151,29 +129,82 @@ export default function App() {
     setIntegrationLogs([])
   }
 
-  async function load(currentToken = token) {
-    if (!currentToken) return
+  async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+    const headers = new Headers(options.headers)
+    const method = (options.method ?? 'GET').toUpperCase()
+    if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
+    if (mutatingMethods.has(method)) {
+      const csrf = cookieValue(CSRF_COOKIE)
+      if (csrf) headers.set(CSRF_HEADER, csrf)
+    }
+    const response = await fetch(`${API}${path}`, { ...options, headers, credentials: 'include' })
+    if (response.status === 401) {
+      clearSessionState()
+      throw new Error('Сессия завершена')
+    }
+    if (!response.ok) throw new Error(await responseErrorMessage(response))
+    return response.json() as Promise<T>
+  }
+
+  async function signIn(event: FormEvent) {
+    event.preventDefault()
     setError('')
     try {
-      const me = await api<User>('/auth/me', {}, currentToken)
+      const response = await fetch(`${API}/auth/web-login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ login, password }),
+      })
+      if (!response.ok) {
+        const fallback = response.status === 401 ? 'Неверный логин или пароль' : undefined
+        throw new Error(await responseErrorMessage(response, fallback))
+      }
+      setPassword('')
+      setAuthenticated(true)
+      await load(true)
+    } catch (e) {
+      setError(String(e).replace('Error: ', ''))
+    }
+  }
+
+  async function signOut() {
+    const csrf = cookieValue(CSRF_COOKIE)
+    try {
+      await fetch(`${API}/auth/web-logout`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: csrf ? { [CSRF_HEADER]: csrf } : {},
+      })
+    } finally {
+      clearSessionState()
+      setSessionChecked(true)
+    }
+  }
+
+  async function load(showErrors = true) {
+    if (showErrors) setError('')
+    try {
+      const me = await api<User>('/auth/me')
+      setAuthenticated(true)
       setCurrentUser(me)
       const [stockRows, locationRows, productRows] = await Promise.all([
-        api<Stock[]>('/stocks', {}, currentToken),
-        api<Location[]>('/locations', {}, currentToken),
-        api<Product[]>('/products', {}, currentToken),
+        api<Stock[]>('/stocks'),
+        api<Location[]>('/locations'),
+        api<Product[]>('/products'),
       ])
       setStocks(stockRows)
       setLocations(locationRows)
       setProducts(productRows)
-      if (me.role === 'admin') setUsers(await api<User[]>('/admin/users', {}, currentToken))
+      if (me.role === 'admin') setUsers(await api<User[]>('/admin/users'))
       else setUsers([])
       if (me.role === 'admin' || me.role === 'manager') {
         const [debtRows, stockHistory, moneyHistory, reportRows, syncRows] = await Promise.all([
-          api<Debt[]>('/representatives/debts/all', {}, currentToken),
-          api<StockOperation[]>('/operations/stock?limit=100', {}, currentToken),
-          api<MoneyOperation[]>('/operations/money?limit=100', {}, currentToken),
-          api<RepresentativeReport[]>('/reports/representatives', {}, currentToken),
-          api<IntegrationLog[]>('/admin/integration-1c/logs?limit=50', {}, currentToken),
+          api<Debt[]>('/representatives/debts/all'),
+          api<StockOperation[]>('/operations/stock?limit=100'),
+          api<MoneyOperation[]>('/operations/money?limit=100'),
+          api<RepresentativeReport[]>('/reports/representatives'),
+          api<IntegrationLog[]>('/admin/integration-1c/logs?limit=50'),
         ])
         setDebts(debtRows)
         setStockOperations(stockHistory)
@@ -188,7 +219,9 @@ export default function App() {
         setIntegrationLogs([])
       }
     } catch (e) {
-      setError(String(e).replace('Error: ', ''))
+      if (showErrors && authenticated) setError(String(e).replace('Error: ', ''))
+    } finally {
+      setSessionChecked(true)
     }
   }
 
@@ -198,7 +231,7 @@ export default function App() {
     try {
       await api(path, { method: 'POST', body: JSON.stringify(body) })
       setNotice(success)
-      await load()
+      await load(false)
     } catch (e) {
       setError(String(e).replace('Error: ', ''))
     }
@@ -215,22 +248,28 @@ export default function App() {
       })
       setCurrentPassword('')
       setNewPassword('')
-      signOut()
+      await signOut()
       setError('Пароль изменен. Войдите повторно с новым паролем.')
     } catch (e) {
       setError(String(e).replace('Error: ', ''))
     }
   }
 
-  useEffect(() => { if (token) void load(token) }, [token])
+  useEffect(() => {
+    // Удаляем legacy JWT, который старые версии панели могли оставить в браузере.
+    window.localStorage.removeItem('ceh-token')
+    void load(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
-    if (!token) return
+    if (!authenticated) return
     const wsBase = API.replace('http://', 'ws://').replace('https://', 'wss://').replace('/api/v1', '')
-    const socket = new WebSocket(`${wsBase}/api/v1/realtime?token=${encodeURIComponent(token)}`)
-    socket.onmessage = () => void load(token)
+    const socket = new WebSocket(`${wsBase}/api/v1/realtime`)
+    socket.onmessage = () => void load(false)
     return () => socket.close()
-  }, [token])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authenticated])
 
   const filtered = useMemo(() => {
     const value = query.trim().toLowerCase()
@@ -238,7 +277,11 @@ export default function App() {
     return stocks.filter((item) => `${item.product_name} ${item.sku} ${item.location_name}`.toLowerCase().includes(value))
   }, [stocks, query])
 
-  if (!token) {
+  if (!sessionChecked) {
+    return <main className="login-page"><section className="login-card"><h1>Цех Склад</h1><p>Проверка сессии…</p></section></main>
+  }
+
+  if (!authenticated) {
     return (
       <main className="login-page">
         <form className="login-card" onSubmit={signIn}>
@@ -254,7 +297,7 @@ export default function App() {
   }
 
   if (currentUser?.role === 'representative') {
-    return <main><section className="panel"><h1>Цех Склад</h1><p>Для торгового представителя предназначено Android-приложение.</p><button onClick={signOut}>Выйти</button></section></main>
+    return <main><section className="panel"><h1>Цех Склад</h1><p>Для торгового представителя предназначено Android-приложение.</p><button onClick={() => void signOut()}>Выйти</button></section></main>
   }
 
   const totalPositions = new Set(stocks.map((item) => item.product_id)).size
@@ -269,7 +312,7 @@ export default function App() {
           <h1>Цех Склад</h1>
           <small>{currentUser?.name}</small>
         </div>
-        <div className="actions"><button onClick={() => void load()}>Обновить</button><button className="secondary" onClick={signOut}>Выйти</button></div>
+        <div className="actions"><button onClick={() => void load()}>Обновить</button><button className="secondary" onClick={() => void signOut()}>Выйти</button></div>
       </header>
 
       {error && <p className="message error">{error}</p>}

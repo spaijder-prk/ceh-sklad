@@ -4,12 +4,13 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, HTTPException, Response, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .auth import create_access_token, decode_user_id, get_current_user, hash_password, require_roles, token_matches_user, validate_new_password, verify_password, verify_unknown_password
+from .config import settings
 from .database import SessionFactory, get_session
 from .models import InventoryBalance, Location, LocationKind, MoneyTransaction, Product, StockDocumentKind, User, UserRole
 from .realtime import hub
@@ -32,10 +33,15 @@ from .schemas import (
     UserOut,
 )
 from .services import create_adjustment, create_cash_handover, create_sale, create_transfer, representative_debt
+from .web_security import SESSION_COOKIE, bearer_from_header, clear_web_session, set_web_session
 
 router = APIRouter(prefix="/api/v1")
 _MAX_FAILED_LOGIN_ATTEMPTS = 5
 _LOGIN_LOCK_DURATION = timedelta(minutes=5)
+
+
+class WebSessionOut(BaseModel):
+    message: str
 
 
 def _ensure_own_location(user: User, location_id: UUID) -> None:
@@ -72,8 +78,7 @@ async def _require_location_kind(session: AsyncSession, location_id: UUID, expec
     return location
 
 
-@router.post("/auth/login", response_model=TokenOut)
-async def login(payload: LoginIn, session: AsyncSession = Depends(get_session)) -> TokenOut:
+async def _authenticate(payload: LoginIn, session: AsyncSession) -> User:
     user = await session.scalar(select(User).where(User.login == payload.login).with_for_update())
     if user is None:
         verify_unknown_password(payload.password)
@@ -107,9 +112,31 @@ async def login(payload: LoginIn, session: AsyncSession = Depends(get_session)) 
 
     user.failed_login_attempts = 0
     user.login_locked_until = None
-    access_token = create_access_token(user)
     await session.commit()
-    return TokenOut(access_token=access_token)
+    return user
+
+
+@router.post("/auth/login", response_model=TokenOut)
+async def login(payload: LoginIn, session: AsyncSession = Depends(get_session)) -> TokenOut:
+    user = await _authenticate(payload, session)
+    return TokenOut(access_token=create_access_token(user))
+
+
+@router.post("/auth/web-login", response_model=WebSessionOut)
+async def web_login(
+    payload: LoginIn,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+) -> WebSessionOut:
+    user = await _authenticate(payload, session)
+    set_web_session(response, create_access_token(user))
+    return WebSessionOut(message="Браузерная сессия создана")
+
+
+@router.post("/auth/web-logout", response_model=WebSessionOut)
+async def web_logout(response: Response) -> WebSessionOut:
+    clear_web_session(response)
+    return WebSessionOut(message="Браузерная сессия завершена")
 
 
 @router.get("/auth/me", response_model=UserOut)
@@ -286,7 +313,20 @@ async def all_debts(_: User = Depends(require_roles(UserRole.ADMIN, UserRole.MAN
 
 
 @router.websocket("/realtime")
-async def realtime(websocket: WebSocket, token: str, location_id: UUID | None = None) -> None:
+async def realtime(websocket: WebSocket, location_id: UUID | None = None) -> None:
+    authorization_token = bearer_from_header(websocket.headers.get("Authorization"))
+    cookie_token = websocket.cookies.get(SESSION_COOKIE)
+    token = authorization_token or cookie_token
+    if not token:
+        await websocket.close(code=4401)
+        return
+
+    if cookie_token and authorization_token is None:
+        origin = websocket.headers.get("Origin")
+        if not origin or origin not in settings.cors_origins:
+            await websocket.close(code=4403)
+            return
+
     try:
         user_id = decode_user_id(token)
         async with SessionFactory() as session:

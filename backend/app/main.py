@@ -20,6 +20,7 @@ from .reporting import router as reporting_router
 from .system_status import router as system_status_router
 from .unf_cloud import router as unf_cloud_router
 from .version import APP_VERSION
+from .web_security import protect_cookie_mutations
 
 
 @asynccontextmanager
@@ -31,6 +32,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, version=APP_VERSION, lifespan=lifespan)
+app.middleware("http")(protect_cookie_mutations)
 app.middleware("http")(audit_mutations)
 app.add_middleware(
     CORSMiddleware,

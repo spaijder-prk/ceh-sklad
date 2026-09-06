@@ -263,7 +263,10 @@ class WarehouseRepository(context: Context) {
     fun connectRealtime(onRefreshNeeded: () -> Unit): RealtimeSubscription? {
         val currentToken = token ?: return null
         val wsBase = BuildConfig.API_BASE_URL.replace("https://", "wss://").replace("http://", "ws://")
-        val request = Request.Builder().url("${wsBase}api/v1/realtime?token=$currentToken").build()
+        val request = Request.Builder()
+            .url("${wsBase}api/v1/realtime")
+            .header("Authorization", "Bearer $currentToken")
+            .build()
         return RealtimeSubscription(client, request, onRefreshNeeded)
     }
 

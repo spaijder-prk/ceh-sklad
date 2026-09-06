@@ -2,7 +2,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
         android:label="Цех Склад"
         android:usesCleartextTraffic="false">
         <activity

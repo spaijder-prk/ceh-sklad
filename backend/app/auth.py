@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pwdlib import PasswordHash
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .config import settings
 from .database import get_session
 from .models import User, UserRole
+from .web_security import SESSION_COOKIE
 
 password_hash = PasswordHash.recommended()
 bearer = HTTPBearer(auto_error=False)
@@ -91,12 +92,14 @@ def token_matches_user(token: str, user: User) -> bool:
 
 
 async def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     session: AsyncSession = Depends(get_session),
 ) -> User:
-    if credentials is None:
+    token = credentials.credentials if credentials is not None else request.cookies.get(SESSION_COOKIE)
+    if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Требуется авторизация")
-    user_id, fingerprint = decode_token_identity(credentials.credentials)
+    user_id, fingerprint = decode_token_identity(token)
     user = await session.get(User, user_id)
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь недоступен")

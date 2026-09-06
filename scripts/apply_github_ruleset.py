@@ -6,7 +6,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 API = "https://api.github.com"
@@ -32,6 +32,8 @@ def _request(method: str, url: str, token: str | None, payload: dict | None = No
     except HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"GitHub API {exc.code}: {body[:1000]}") from exc
+    except (URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(f"GitHub API недоступен: {exc}") from exc
 
 
 def _parse_args() -> argparse.Namespace:

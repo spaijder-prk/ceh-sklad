@@ -75,7 +75,7 @@ jobs:
           java-version: "17"
 
       - name: Включить Gradle cache
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Проверить URL и наличие release secrets
         env:

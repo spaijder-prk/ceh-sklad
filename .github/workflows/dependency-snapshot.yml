@@ -75,7 +75,7 @@ jobs:
           java-version: "17"
 
       - name: Установить Gradle для bootstrap wrapper
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "8.11.1"
 

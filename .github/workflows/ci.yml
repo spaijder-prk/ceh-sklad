@@ -172,7 +172,7 @@ jobs:
           distribution: temurin
           java-version: "17"
       - name: Включить Gradle cache
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
       - name: Выполнить unit-тесты и собрать debug/release/androidTest через Wrapper
         run: ./android/gradlew -p android :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease :app:assembleDebugAndroidTest -PCEH_API_BASE_URL=https://ci.invalid/ --stacktrace
       - name: Сохранить debug APK

@@ -101,6 +101,7 @@ class HardeningContractsTest(unittest.TestCase):
 
     def test_staging_acceptance_uses_verified_main_and_locked_dependencies(self):
         workflow = (ROOT / ".github/workflows/staging-acceptance.yml").read_text(encoding="utf-8")
+        smoke = (ROOT / "scripts/staging_smoke.py").read_text(encoding="utf-8")
 
         required_fragments = (
             "permissions:\n  contents: read\n  actions: read",
@@ -127,6 +128,11 @@ class HardeningContractsTest(unittest.TestCase):
         )
         self.assertNotIn('--expected-schema-revision "20260904_09"', workflow)
         self.assertNotIn("run: pip install -e './backend[dev]'", workflow)
+
+        self.assertIn('urlencode({"location_id": args.expected_location_id})', smoke)
+        self.assertIn('additional_headers={"Authorization": f"Bearer {token}"}', smoke)
+        self.assertNotIn('urlencode({"token": token', smoke)
+        self.assertNotIn('"token": token, "location_id"', smoke)
 
 
 if __name__ == "__main__":

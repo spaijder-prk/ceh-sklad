@@ -3,43 +3,7 @@ name: Проверка release-контрактов
 on:
   push:
     branches: [main]
-    paths:
-      - "VERSION"
-      - "backend/pyproject.toml"
-      - "backend/app/main.py"
-      - "backend/app/version.py"
-      - "admin-web/package.json"
-      - "scripts/android_release_manifest.py"
-      - "scripts/backup.sh"
-      - "scripts/deploy_production.py"
-      - "scripts/prepare_android_signing.py"
-      - "scripts/prepare_production_env.py"
-      - "scripts/restore.sh"
-      - "scripts/verify_android_release.py"
-      - "scripts/tests/**"
-      - "docker-compose.production.yml"
-      - ".github/workflows/android-release.yml"
-      - ".github/workflows/release-contract-ci.yml"
-      - "android/app/build.gradle.kts"
   pull_request:
-    paths:
-      - "VERSION"
-      - "backend/pyproject.toml"
-      - "backend/app/main.py"
-      - "backend/app/version.py"
-      - "admin-web/package.json"
-      - "scripts/android_release_manifest.py"
-      - "scripts/backup.sh"
-      - "scripts/deploy_production.py"
-      - "scripts/prepare_android_signing.py"
-      - "scripts/prepare_production_env.py"
-      - "scripts/restore.sh"
-      - "scripts/verify_android_release.py"
-      - "scripts/tests/**"
-      - "docker-compose.production.yml"
-      - ".github/workflows/android-release.yml"
-      - ".github/workflows/release-contract-ci.yml"
-      - "android/app/build.gradle.kts"
 
 permissions:
   contents: read
@@ -72,9 +36,11 @@ jobs:
           python -m compileall
           backend/app/version.py
           scripts/android_release_manifest.py
+          scripts/apply_github_ruleset.py
           scripts/deploy_production.py
           scripts/prepare_android_signing.py
           scripts/prepare_production_env.py
+          scripts/production_monitor.py
           scripts/verify_android_release.py
           scripts/tests
 
@@ -84,6 +50,7 @@ jobs:
       - name: Проверить shell-синтаксис backup/restore
         run: |
           sh -n scripts/backup.sh
+          sh -n scripts/backup_offsite.sh
           sh -n scripts/restore.sh
 
       - name: Проверить реальное создание PKCS12

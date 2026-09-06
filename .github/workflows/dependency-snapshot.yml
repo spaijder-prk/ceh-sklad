@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: dependency-snapshot-main
@@ -51,8 +52,9 @@ jobs:
           set -Eeuo pipefail
           python -m venv "$RUNNER_TEMP/backend-lock"
           "$RUNNER_TEMP/backend-lock/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/backend-lock/bin/pip" install setuptools==80.9.0
           "$RUNNER_TEMP/backend-lock/bin/pip" install -e './backend[dev]'
-          "$RUNNER_TEMP/backend-lock/bin/pip" freeze --exclude-editable | LC_ALL=C sort > backend/requirements.lock
+          "$RUNNER_TEMP/backend-lock/bin/pip" freeze --all --exclude-editable | grep -v '^pip==' | LC_ALL=C sort > backend/requirements.lock
 
       - name: Зафиксировать УНФ bridge Python зависимости
         shell: bash
@@ -60,8 +62,9 @@ jobs:
           set -Eeuo pipefail
           python -m venv "$RUNNER_TEMP/unf-lock"
           "$RUNNER_TEMP/unf-lock/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/unf-lock/bin/pip" install setuptools==80.9.0
           "$RUNNER_TEMP/unf-lock/bin/pip" install -e './unf-bridge[dev]'
-          "$RUNNER_TEMP/unf-lock/bin/pip" freeze --exclude-editable | LC_ALL=C sort > unf-bridge/requirements.lock
+          "$RUNNER_TEMP/unf-lock/bin/pip" freeze --all --exclude-editable | grep -v '^pip==' | LC_ALL=C sort > unf-bridge/requirements.lock
 
       - name: Установить Java
         uses: actions/setup-java@v5
@@ -95,19 +98,34 @@ jobs:
           test -s android/gradlew
           test -s android/gradle/wrapper/gradle-wrapper.jar
           grep -q '^distributionSha256Sum=' android/gradle/wrapper/gradle-wrapper.properties
+          grep -q '^setuptools==80.9.0$' backend/requirements.lock
+          grep -q '^setuptools==80.9.0$' unf-bridge/requirements.lock
           (cd admin-web && npm ci --ignore-scripts)
           ./android/gradlew -p android --version
 
-      - name: Зафиксировать снимок зависимостей в main
+      - name: Создать pull request с обновленным снимком
+        id: lock_pr
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -Eeuo pipefail
           git add admin-web/package-lock.json backend/requirements.lock unf-bridge/requirements.lock android/gradlew android/gradlew.bat android/gradle/wrapper
           if git diff --cached --quiet; then
             echo "Lock-файлы уже актуальны."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
+          BRANCH="automation/dependency-locks-${GITHUB_RUN_ID}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
           git commit -m "Обновить lock-файлы и Gradle Wrapper"
-          git push origin HEAD:main
+          git push origin "$BRANCH"
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "Обновить lock-файлы и Gradle Wrapper" \
+            --body "Автоматически пересобраны package-lock, Python lock-файлы и Gradle Wrapper. Изменения должны пройти обязательный CI перед merge в main."
+          echo "changed=true" >> "$GITHUB_OUTPUT"

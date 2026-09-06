@@ -65,10 +65,8 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Установить Gradle
+      - name: Включить Gradle cache
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.9"
 
       - name: Проверить URL и наличие release secrets
         env:
@@ -99,14 +97,14 @@ jobs:
           KEYSTORE_BASE64: ${{ secrets.CEH_ANDROID_KEYSTORE_BASE64 }}
         run: echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/ceh-sklad-release.keystore"
 
-      - name: Собрать подписанные APK и AAB
+      - name: Собрать подписанные APK и AAB через Gradle Wrapper
         env:
           CEH_ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/ceh-sklad-release.keystore
           CEH_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.CEH_ANDROID_KEYSTORE_PASSWORD }}
           CEH_ANDROID_KEY_ALIAS: ${{ secrets.CEH_ANDROID_KEY_ALIAS }}
           CEH_ANDROID_KEY_PASSWORD: ${{ secrets.CEH_ANDROID_KEY_PASSWORD }}
         run: >-
-          gradle -p android
+          ./android/gradlew -p android
           :app:assembleRelease
           :app:bundleRelease
           -PCEH_API_BASE_URL="${{ inputs.api_base_url }}"

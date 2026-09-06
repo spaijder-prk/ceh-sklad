@@ -1,0 +1,39 @@
+name: Применить защиту main
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apply-main-ruleset
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    name: Применить repository ruleset для main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+
+      - name: Установить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Проверить наличие admin token
+        env:
+          GITHUB_ADMIN_TOKEN: ${{ secrets.CEH_GITHUB_ADMIN_TOKEN }}
+        run: |
+          test -n "$GITHUB_ADMIN_TOKEN" || {
+            echo "Добавьте secret CEH_GITHUB_ADMIN_TOKEN с Repository administration: write." >&2
+            exit 2
+          }
+
+      - name: Применить ruleset
+        env:
+          GITHUB_ADMIN_TOKEN: ${{ secrets.CEH_GITHUB_ADMIN_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python scripts/apply_github_ruleset.py

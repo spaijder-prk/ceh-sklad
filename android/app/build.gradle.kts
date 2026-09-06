@@ -23,12 +23,12 @@ val releaseSigningConfigured = listOf(
 
 android {
     namespace = "ru.ceh.sklad"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "ru.ceh.sklad"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 1
         versionName = "0.4.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

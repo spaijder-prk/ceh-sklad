@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+import json
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+class HardeningContractsTest(unittest.TestCase):
+    def test_android_uses_api_36_and_pinned_wrapper(self):
+        app_gradle = (ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
+        root_gradle = (ROOT / "android/build.gradle.kts").read_text(encoding="utf-8")
+        wrapper = (ROOT / "android/gradle/wrapper/gradle-wrapper.properties").read_text(encoding="utf-8")
+
+        self.assertIn('version "8.10.1"', root_gradle)
+        self.assertIn("compileSdk = 36", app_gradle)
+        self.assertIn("targetSdk = 36", app_gradle)
+        self.assertIn("gradle-8.11.1-bin.zip", wrapper)
+        self.assertRegex(wrapper, r"(?m)^distributionSha256Sum=[0-9a-f]{64}$")
+
+    def test_ci_uses_locked_dependencies_wrapper_and_web_e2e(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        web_docker = (ROOT / "admin-web/Dockerfile").read_text(encoding="utf-8")
+        backend_docker = (ROOT / "backend/Dockerfile").read_text(encoding="utf-8")
+
+        self.assertIn("npm ci", workflow)
+        self.assertIn("npm run test:e2e", workflow)
+        self.assertIn("./android/gradlew -p android", workflow)
+        self.assertIn("name: Итоговая проверка проекта", workflow)
+        self.assertIn("COPY package.json package-lock.json", web_docker)
+        self.assertIn("RUN npm ci", web_docker)
+        self.assertNotIn("RUN npm install", web_docker)
+        self.assertIn("COPY pyproject.toml requirements.lock", backend_docker)
+        self.assertIn("pip install --no-cache-dir -r requirements.lock", backend_docker)
+        self.assertIn("--no-build-isolation", backend_docker)
+
+    def test_all_android_workflows_build_through_wrapper(self):
+        release = (ROOT / ".github/workflows/android-release.yml").read_text(encoding="utf-8")
+        instrumented = (ROOT / ".github/workflows/android-instrumented.yml").read_text(encoding="utf-8")
+
+        self.assertIn("./android/gradlew -p android", release)
+        self.assertIn("./android/gradlew -p android", instrumented)
+        self.assertNotIn('gradle-version: "8.9"', release)
+        self.assertNotIn('gradle-version: "8.9"', instrumented)
+        self.assertIn("api-level: 36", instrumented)
+
+    def test_main_ruleset_requires_pr_and_both_ci_checks(self):
+        ruleset = json.loads((ROOT / ".github/rulesets/main.json").read_text(encoding="utf-8"))
+        types = {rule["type"] for rule in ruleset["rules"]}
+        self.assertEqual(ruleset["enforcement"], "active")
+        self.assertIn("pull_request", types)
+        self.assertIn("non_fast_forward", types)
+        self.assertIn("deletion", types)
+
+        status_rule = next(rule for rule in ruleset["rules"] if rule["type"] == "required_status_checks")
+        contexts = {item["context"] for item in status_rule["parameters"]["required_status_checks"]}
+        self.assertEqual(
+            contexts,
+            {"Итоговая проверка проекта", "Проверить production и Android release-контракты"},
+        )
+
+    def test_lock_refresh_opens_pr_instead_of_pushing_main(self):
+        workflow = (ROOT / ".github/workflows/dependency-snapshot.yml").read_text(encoding="utf-8")
+        self.assertNotIn("git push origin HEAD:main", workflow)
+        self.assertIn('BRANCH="automation/dependency-locks-${GITHUB_RUN_ID}"', workflow)
+        self.assertIn("gh pr create", workflow)
+        self.assertIn("pull-requests: write", workflow)
+
+
+if __name__ == "__main__":
+    unittest.main()

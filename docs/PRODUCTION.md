@@ -112,11 +112,13 @@ curl --fail https://sklad.example.ru/health/ready
 
 Caddy автоматически получает и обновляет сертификат для `CEH_DOMAIN`. WebSocket `wss://<домен>/api/v1/realtime` идет через тот же reverse proxy без отдельного внешнего порта.
 
-Release Android должен использовать этот же HTTPS origin:
+Android 0.4.0 собирается с `compileSdk=36` и `targetSdk=36` через зафиксированный Gradle Wrapper. Release должен использовать тот же HTTPS origin:
 
 ```bash
-gradle -p android :app:assembleRelease -PCEH_API_BASE_URL=https://sklad.example.ru/
+./android/gradlew -p android :app:assembleRelease -PCEH_API_BASE_URL=https://sklad.example.ru/
 ```
+
+Для production-подписи и публикации используйте workflow `Подписанный Android release` и инструкции из `docs/ANDROID_RELEASE.md`; ручная локальная release-сборка выше сама по себе не заменяет проверку подписи и release manifest.
 
 Web-панель при production Docker build получает `VITE_API_BASE_URL=https://<домен>/api/v1`; сборка с HTTP URL запрещена.
 
@@ -124,6 +126,9 @@ Web-панель при production Docker build получает `VITE_API_BASE_
 
 - PostgreSQL хранится в volume `ceh_postgres` и не публикует порт наружу.
 - Перед обновлением выполняйте резервную копию по `docs/BACKUP.md`; `deploy_production.py` делает её автоматически для уже работающей БД.
+- `scripts/backup.sh --production` валидирует custom-format dump, формирует SHA-256 и metadata.
+- `scripts/backup_offsite.sh` отправляет проверенный backup во внешний каталог или `rclone` remote; ежедневный запуск можно включить через подготовленный systemd timer.
+- `scripts/production_monitor.py` проверяет HTTPS readiness, свежесть и checksum последней копии и свободное место; подготовлен отдельный systemd timer.
 - CI создает custom-format dump, восстанавливает его в отдельную БД и проверяет Alembic revision и наличие актуальных колонок схемы.
 - Для реального восстановления используйте отдельное окно обслуживания и после restore снова выполните `alembic upgrade head`.
 
@@ -142,3 +147,6 @@ Web-панель при production Docker build получает `VITE_API_BASE_
 7. Тестовая продажа изменяет остаток и появляется в журнале/отчете.
 8. Выполнен staging load-test по `docs/LOAD_TEST.md`.
 9. Выполнен Android instrumented smoke workflow.
+10. Проверена локальная и off-site резервная копия, а production monitoring работает по таймеру.
+
+Полная последовательность допуска к реальной эксплуатации описана в `docs/GO_LIVE.md`.

@@ -125,12 +125,16 @@ async def main() -> None:
             print("Контур 1С:УНФ Cloud: пропущен, CEH_STAGING_1C_KEY не задан")
 
     parsed = urlparse(base_url)
-    websocket_scheme = "wss"
-    query = urlencode({"token": token, "location_id": args.expected_location_id})
-    ws_url = f"{websocket_scheme}://{parsed.netloc}/api/v1/realtime?{query}"
-    async with websockets.connect(ws_url, open_timeout=args.timeout, close_timeout=args.timeout) as socket:
+    query = urlencode({"location_id": args.expected_location_id})
+    ws_url = f"wss://{parsed.netloc}/api/v1/realtime?{query}"
+    async with websockets.connect(
+        ws_url,
+        additional_headers={"Authorization": f"Bearer {token}"},
+        open_timeout=args.timeout,
+        close_timeout=args.timeout,
+    ) as socket:
         await socket.send("staging-smoke")
-        print("WebSocket: WSS handshake и отправка сообщения успешны")
+        print("WebSocket: WSS handshake с Authorization header и отправка сообщения успешны")
 
     print("Staging smoke завершен успешно. Изменяющие операции не выполнялись.")
 

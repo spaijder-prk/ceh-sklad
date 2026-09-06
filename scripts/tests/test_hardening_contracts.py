@@ -56,6 +56,8 @@ class HardeningContractsTest(unittest.TestCase):
     def test_production_uses_public_ip_https_with_shortlived_acme(self):
         compose = (ROOT / "docker-compose.production.yml").read_text(encoding="utf-8")
         caddy = (ROOT / "Caddyfile").read_text(encoding="utf-8")
+        monitor = (ROOT / "scripts/production_monitor.py").read_text(encoding="utf-8")
+        release = (ROOT / ".github/workflows/android-release.yml").read_text(encoding="utf-8")
 
         self.assertIn("caddy:2.11.3-alpine", compose)
         self.assertIn("CEH_PUBLIC_ORIGIN", compose)
@@ -69,6 +71,10 @@ class HardeningContractsTest(unittest.TestCase):
         self.assertIn("disable_tlsalpn_challenge", caddy)
         self.assertIn("{$CEH_PUBLIC_WS_ORIGIN}", caddy)
         self.assertNotIn("CEH_DOMAIN", caddy)
+
+        self.assertIn("CEH_PUBLIC_ORIGIN", monitor)
+        self.assertNotIn("CEH_DOMAIN", monitor)
+        self.assertIn("https://IP:PORT/", release)
 
     def test_production_bootstrap_can_be_disabled_after_initialization(self):
         compose = (ROOT / "docker-compose.production.yml").read_text(encoding="utf-8")

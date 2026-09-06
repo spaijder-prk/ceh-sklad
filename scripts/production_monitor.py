@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import shutil
+import ssl
 import sys
 import time
 from pathlib import Path
@@ -35,9 +36,22 @@ def _base_url() -> str:
     raise ValueError("Не задан CEH_MONITOR_BASE_URL или CEH_PUBLIC_ORIGIN")
 
 
-def _get_json(url: str) -> dict:
+def _monitor_ssl_context() -> ssl.SSLContext:
+    ca_value = os.environ.get("CEH_MONITOR_CA_CERT", "").strip()
+    tls_mode = os.environ.get("CEH_TLS_MODE", "").strip()
+    if not ca_value:
+        if tls_mode == "internal-ca":
+            raise ValueError("Для CEH_TLS_MODE=internal-ca задайте CEH_MONITOR_CA_CERT")
+        return ssl.create_default_context()
+    ca_path = Path(ca_value).expanduser()
+    if not ca_path.is_file():
+        raise ValueError(f"CEH_MONITOR_CA_CERT не найден: {ca_path}")
+    return ssl.create_default_context(cafile=str(ca_path))
+
+
+def _get_json(url: str, context: ssl.SSLContext) -> dict:
     request = Request(url, headers={"User-Agent": "ceh-sklad-production-monitor/1"})
-    with urlopen(request, timeout=10) as response:
+    with urlopen(request, timeout=10, context=context) as response:
         if response.status != 200:
             raise RuntimeError(f"HTTP {response.status}")
         value = json.loads(response.read().decode("utf-8"))
@@ -89,8 +103,9 @@ def main() -> int:
 
     try:
         base_url = _base_url()
-        health = _get_json(f"{base_url}/health")
-        ready = _get_json(f"{base_url}/health/ready")
+        context = _monitor_ssl_context()
+        health = _get_json(f"{base_url}/health", context)
+        ready = _get_json(f"{base_url}/health/ready", context)
         if health.get("status") != "ok":
             errors.append("/health не вернул status=ok")
         if ready.get("status") != "ready" or ready.get("database") != "ok":
@@ -98,7 +113,7 @@ def main() -> int:
         details["base_url"] = base_url
         details["version"] = health.get("version")
         details["schema_revision"] = ready.get("schema_revision")
-    except (HTTPError, URLError, TimeoutError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+    except (HTTPError, URLError, TimeoutError, ValueError, RuntimeError, json.JSONDecodeError, ssl.SSLError) as exc:
         errors.append(f"HTTPS health: {exc}")
 
     backup_dir = Path(os.environ.get("CEH_BACKUP_DIR", "backups"))

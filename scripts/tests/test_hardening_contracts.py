@@ -53,6 +53,18 @@ class HardeningContractsTest(unittest.TestCase):
         self.assertIn("playwright-report/\n", web_ignore)
         self.assertIn("test-results/\n", web_ignore)
 
+    def test_production_bootstrap_can_be_disabled_after_initialization(self):
+        compose = (ROOT / "docker-compose.production.yml").read_text(encoding="utf-8")
+        first_run = (ROOT / "docs/FIRST_RUN.md").read_text(encoding="utf-8")
+        production = (ROOT / "docs/PRODUCTION.md").read_text(encoding="utf-8")
+
+        self.assertIn("BOOTSTRAP_ADMIN_LOGIN: '${BOOTSTRAP_ADMIN_LOGIN:-}'", compose)
+        self.assertIn("BOOTSTRAP_ADMIN_PASSWORD: '${BOOTSTRAP_ADMIN_PASSWORD:-}'", compose)
+        self.assertNotIn("BOOTSTRAP_ADMIN_LOGIN:?", compose)
+        self.assertNotIn("BOOTSTRAP_ADMIN_PASSWORD:?", compose)
+        self.assertIn("удалите из `.env.production` обе строки `BOOTSTRAP_ADMIN_LOGIN`", first_run)
+        self.assertIn("Bootstrap credentials являются временным секретом первого запуска", production)
+
     def test_all_android_workflows_build_through_wrapper(self):
         release = (ROOT / ".github/workflows/android-release.yml").read_text(encoding="utf-8")
         instrumented = (ROOT / ".github/workflows/android-instrumented.yml").read_text(encoding="utf-8")

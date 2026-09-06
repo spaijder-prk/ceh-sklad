@@ -137,11 +137,15 @@ curl --fail https://<REAL_DOMAIN>/health/ready
 1. TLS-сертификат и HTTPS web-панель;
 2. что 5432 и 8000 недоступны извне;
 3. вход bootstrap-администратора и немедленную смену временного пароля;
-4. создание/проверку ролей `representative`, `admin`, `manager`;
-5. production WebSocket через `wss://`;
-6. backup, off-site backup и restore drill по `docs/BACKUP.md`;
-7. мониторинг и systemd timers;
-8. подписанный Android release и physical-device UAT.
+4. повторный вход уже с новым паролем;
+5. удалить из `.env.production` обе строки `BOOTSTRAP_ADMIN_LOGIN` и `BOOTSTRAP_ADMIN_PASSWORD`, затем повторно выполнить `python scripts/deploy_production.py --skip-backup --no-build` и убедиться, что новый вход по-прежнему работает;
+6. создание/проверку ролей `representative`, `admin`, `manager`;
+7. production WebSocket через `wss://`;
+8. backup, off-site backup и restore drill по `docs/BACKUP.md`;
+9. мониторинг и systemd timers;
+10. подписанный Android release и physical-device UAT.
+
+Удаление `BOOTSTRAP_ADMIN_*` после подтверждённой смены пароля отключает механизм создания первого администратора. Существующий пользователь остаётся в PostgreSQL и продолжает работать с новым паролем. Не удаляйте эти строки до успешного первого входа и проверки нового пароля.
 
 ## 3. Что не включать на первом старте
 
@@ -156,7 +160,8 @@ curl --fail https://<REAL_DOMAIN>/health/ready
 - активна защита `main`;
 - release commit имеет зелёные обязательные CI checks;
 - production HTTPS health/readiness зелёные;
-- bootstrap-пароль сменён;
+- bootstrap-пароль сменён и повторный вход новым паролем подтверждён;
+- `BOOTSTRAP_ADMIN_LOGIN`/`BOOTSTRAP_ADMIN_PASSWORD` удалены из production env, bootstrap отключён;
 - внешний доступ ограничен 80/443;
 - backup + off-site + restore drill проверены;
 - monitoring активен;

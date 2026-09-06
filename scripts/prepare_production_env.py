@@ -122,7 +122,12 @@ def main() -> int:
     print(f"Проверьте: docker compose --env-file {output} -f docker-compose.production.yml config")
     print(
         "Перед запуском сохраните BOOTSTRAP_ADMIN_PASSWORD из файла в менеджер паролей; "
-        "после первого входа смените его."
+        "после первого входа смените пароль администратора."
+    )
+    print(
+        "После подтверждения нового пароля удалите из .env.production обе строки "
+        "BOOTSTRAP_ADMIN_LOGIN/BOOTSTRAP_ADMIN_PASSWORD и повторно примените Compose: "
+        "bootstrap больше не нужен и будет отключен."
     )
     return 0
 

@@ -33,7 +33,7 @@ python scripts/prepare_production_env.py \
 - создаёт `.env.production` с правами `0600`;
 - никогда не перезаписывает уже существующий файл и не печатает секреты в консоль.
 
-Перед запуском сохраните `BOOTSTRAP_ADMIN_PASSWORD` из `.env.production` в менеджер паролей. После первого входа администратор должен сменить временный bootstrap-пароль.
+Перед запуском сохраните `BOOTSTRAP_ADMIN_PASSWORD` из `.env.production` в менеджер паролей. После первого входа администратор должен сменить временный bootstrap-пароль, выйти и подтвердить повторный вход новым паролем. После этого удалите из `.env.production` обе строки `BOOTSTRAP_ADMIN_LOGIN` и `BOOTSTRAP_ADMIN_PASSWORD` и повторно примените Compose. Production Compose допускает отсутствие этих переменных после первичной инициализации; существующий администратор хранится в PostgreSQL и не удаляется.
 
 Если требуется полностью ручная настройка, можно использовать шаблон из следующего раздела.
 
@@ -45,7 +45,7 @@ python scripts/prepare_production_env.py \
 cp .env.production.example .env.production
 ```
 
-Ключевые параметры:
+Ключевые параметры первого запуска:
 
 ```env
 CEH_DOMAIN=sklad.example.ru
@@ -58,9 +58,11 @@ BOOTSTRAP_ADMIN_LOGIN=admin
 BOOTSTRAP_ADMIN_PASSWORD=<уникальный сложный пароль>
 ```
 
+`BOOTSTRAP_ADMIN_LOGIN` и `BOOTSTRAP_ADMIN_PASSWORD` нужны только для создания первого администратора. После подтвержденной смены пароля обе переменные должны быть удалены из production env одновременно. Backend валидирует их как пару: нельзя оставить только одну из двух.
+
 Если пароль БД содержит `@`, `:`, `/`, `#` или другие специальные символы, в `DATABASE_URL` используйте URL-encoded представление пароля.
 
-При `ENVIRONMENT=production` backend дополнительно откажется запускаться с дефолтным JWT-секретом, стандартным bootstrap-паролем, тестовым ключом 1С или HTTP-адресом в CORS. Production Compose требует критичные переменные еще до запуска контейнеров.
+При `ENVIRONMENT=production` backend дополнительно откажется запускаться с дефолтным JWT-секретом, стандартным bootstrap-паролем, тестовым ключом 1С или HTTP-адресом в CORS. Production Compose требует постоянные критичные переменные еще до запуска контейнеров; bootstrap-пара допускается пустой после первичной инициализации.
 
 ## Проверка сервера без изменений
 
@@ -96,7 +98,16 @@ python scripts/deploy_production.py
 docker compose --env-file .env.production -f docker-compose.production.yml up -d --build
 ```
 
-Backend при старте автоматически выполняет `alembic upgrade head`, после чего запускает FastAPI. Первый администратор создается только если его еще нет. Caddy начинает обслуживать трафик только после успешного backend healthcheck.
+Backend при старте автоматически выполняет `alembic upgrade head`, после чего запускает FastAPI. Первый администратор создается только если его еще нет и обе bootstrap-переменные заданы. Caddy начинает обслуживать трафик только после успешного backend healthcheck.
+
+После первого входа и смены пароля:
+
+```bash
+# Отредактируйте .env.production и удалите обе строки BOOTSTRAP_ADMIN_*
+python scripts/deploy_production.py --skip-backup --no-build
+```
+
+Этот повторный запуск не меняет пароль существующего администратора и не создаёт нового пользователя; он только перезапускает backend без bootstrap credentials. Сначала обязательно подтвердите повторный вход новым паролем. Для обычных дальнейших обновлений снова используйте `python scripts/deploy_production.py` без `--skip-backup`.
 
 Проверьте состояние:
 
@@ -134,13 +145,13 @@ Web-панель при production Docker build получает `VITE_API_BASE_
 
 ## Секреты
 
-Пароли БД, JWT secret, ключ 1С и ключ подписи Android нельзя хранить в Git. Для CI/CD используйте GitHub Secrets или секрет-хранилище инфраструктуры. Файл `.env.production` также нельзя коммитить.
+Пароли БД, JWT secret, ключ 1С и ключ подписи Android нельзя хранить в Git. Для CI/CD используйте GitHub Secrets или секрет-хранилище инфраструктуры. Файл `.env.production` также нельзя коммитить. Bootstrap credentials являются временным секретом первого запуска и после подтвержденной смены пароля должны быть удалены из production env.
 
 ## Проверка после развертывания
 
 1. `GET /health` возвращает `{"status":"ok"}` через HTTPS.
 2. `GET /health/ready` возвращает `status=ready`, `database=ok` и текущую Alembic revision.
-3. Вход администратора работает только с рабочими учетными данными.
+3. Вход администратора работает с новым постоянным паролем, а `BOOTSTRAP_ADMIN_*` отсутствуют в production env.
 4. Web-панель открывается с рабочего домена и не содержит `localhost` API.
 5. WebSocket `wss://.../api/v1/realtime` подключается из Android.
 6. 1С проходит проверку отдельного `X-1C-Key`.

@@ -40,7 +40,7 @@ python scripts/prepare_production_env.py \
   --email <REAL_ACME_EMAIL>
 ```
 
-Сохранить bootstrap password и другие секреты в менеджере секретов. Не передавать содержимое `.env.production` в issue, PR, чат или логи.
+Сохранить временный bootstrap password и постоянные секреты в менеджере секретов. Не передавать содержимое `.env.production` в issue, PR, чат или логи. Bootstrap-пара используется только для создания первого администратора.
 
 ### Read-only preflight
 
@@ -64,6 +64,24 @@ curl --fail https://<REAL_DOMAIN>/health/ready
 ```
 
 Также проверить web-панель, TLS-сертификат, CORS/Origin и прикладной WebSocket через реальный HTTPS origin.
+
+### Закрыть bootstrap после первичной инициализации
+
+1. Войти bootstrap-администратором.
+2. Немедленно сменить временный пароль.
+3. Выйти и подтвердить повторный вход уже новым паролем.
+4. Удалить из `.env.production` обе строки `BOOTSTRAP_ADMIN_LOGIN` и `BOOTSTRAP_ADMIN_PASSWORD`.
+5. Повторно применить Compose без rebuild:
+
+```bash
+python scripts/deploy_production.py --skip-backup --no-build
+```
+
+6. Ещё раз проверить `/health/ready` и вход новым паролем.
+
+Существующий администратор хранится в PostgreSQL; удаление bootstrap-пары не удаляет пользователя. Не отключайте bootstrap до подтверждённого повторного входа новым паролем.
+
+**Этап 1 пройден**, когда HTTPS/readiness зелёные, наружу доступны только ожидаемые порты, постоянный пароль администратора проверен, а временные `BOOTSTRAP_ADMIN_*` отсутствуют в production env.
 
 ## Этап 2. Production backup и monitoring
 
@@ -174,6 +192,7 @@ Production запуск разрешён только если одноврем�
 - GitHub ruleset для `main` реально Active;
 - оба обязательных CI checks зелёные на release commit;
 - production HTTPS `/health` и `/health/ready` зелёные;
+- постоянный пароль администратора проверен, временные `BOOTSTRAP_ADMIN_*` удалены из production env;
 - локальный и off-site backup проверены, restore drill пройден;
 - production monitoring/timers активны;
 - подписанный Android 0.4.0 соответствует production домену, commit, checksum и signer certificate;

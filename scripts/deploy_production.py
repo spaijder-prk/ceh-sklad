@@ -242,8 +242,9 @@ def main() -> int:
             f"https://{domain}, version={expected_version}, schema={ready.get('schema_revision')}"
         )
         print(
-            "Следующий шаг: войти администратором, сменить bootstrap-пароль и выполнить "
-            "read-only staging smoke/Android release по docs/RELEASE_CHECKLIST.md."
+            "Следующий шаг: войти bootstrap-администратором, сменить пароль, подтвердить "
+            "повторный вход, удалить обе BOOTSTRAP_ADMIN_* строки из .env.production и "
+            "продолжить по docs/GO_LIVE.md."
         )
         return 0
     except (RuntimeError, subprocess.CalledProcessError) as exc:

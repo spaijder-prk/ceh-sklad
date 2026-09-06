@@ -65,7 +65,7 @@ jobs:
 
       - name: Проверить локальные release-контракты
         run: |
-          python -m compileall scripts/prepare_production_env.py scripts/verify_release_backend.py scripts/tests
+          python -m compileall scripts/prepare_production_env.py scripts/export_internal_ca.py scripts/verify_release_backend.py scripts/tests
           python -m unittest discover -s scripts/tests -p "test_*.py" -v
 
       - name: Установить Java
@@ -80,6 +80,7 @@ jobs:
       - name: Проверить URL и наличие release secrets
         env:
           API_BASE_URL: ${{ inputs.api_base_url }}
+          INTERNAL_CA_BASE64: ${{ secrets.CEH_INTERNAL_CA_CERT_BASE64 }}
           KEYSTORE_BASE64: ${{ secrets.CEH_ANDROID_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.CEH_ANDROID_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.CEH_ANDROID_KEY_ALIAS }}
@@ -96,10 +97,18 @@ jobs:
           if parsed.path not in {'', '/'} or parsed.query or parsed.fragment:
               raise SystemExit('api_base_url не должен содержать path/query/fragment')
           PY
+          test -n "$INTERNAL_CA_BASE64" || { echo "Не задан CEH_INTERNAL_CA_CERT_BASE64"; exit 2; }
           test -n "$KEYSTORE_BASE64" || { echo "Не задан CEH_ANDROID_KEYSTORE_BASE64"; exit 2; }
           test -n "$KEYSTORE_PASSWORD" || { echo "Не задан CEH_ANDROID_KEYSTORE_PASSWORD"; exit 2; }
           test -n "$KEY_ALIAS" || { echo "Не задан CEH_ANDROID_KEY_ALIAS"; exit 2; }
           test -n "$KEY_PASSWORD" || { echo "Не задан CEH_ANDROID_KEY_PASSWORD"; exit 2; }
+
+      - name: Подготовить публичный root CA production
+        env:
+          INTERNAL_CA_BASE64: ${{ secrets.CEH_INTERNAL_CA_CERT_BASE64 }}
+        run: |
+          echo "$INTERNAL_CA_BASE64" | base64 --decode > "$RUNNER_TEMP/ceh-sklad-root-ca.crt"
+          openssl x509 -in "$RUNNER_TEMP/ceh-sklad-root-ca.crt" -noout -subject -issuer -fingerprint -sha256
 
       - name: Проверить production backend перед подписью
         env:
@@ -107,6 +116,7 @@ jobs:
         run: >-
           python scripts/verify_release_backend.py
           --base-url "$API_BASE_URL"
+          --ca-cert "$RUNNER_TEMP/ceh-sklad-root-ca.crt"
           --output "$RUNNER_TEMP/android-release-backend.json"
 
       - name: Сохранить проверку production backend
@@ -182,11 +192,14 @@ jobs:
             "$RELEASE_DIR/ceh-sklad-${VERSION_NAME}.aab"
           cp "$RUNNER_TEMP/android-release-manifest.json" \
             "$RELEASE_DIR/android-release-manifest.json"
+          cp "$RUNNER_TEMP/ceh-sklad-root-ca.crt" \
+            "$RELEASE_DIR/ceh-sklad-root-ca.crt"
           (
             cd "$RELEASE_DIR"
             sha256sum "ceh-sklad-${VERSION_NAME}.apk" \
               "ceh-sklad-${VERSION_NAME}.aab" \
-              android-release-manifest.json > SHA256SUMS.txt
+              android-release-manifest.json \
+              ceh-sklad-root-ca.crt > SHA256SUMS.txt
           )
 
           echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
@@ -240,12 +253,13 @@ jobs:
             "$RELEASE_DIR/ceh-sklad-${VERSION_NAME}.apk" \
             "$RELEASE_DIR/ceh-sklad-${VERSION_NAME}.aab" \
             "$RELEASE_DIR/android-release-manifest.json" \
+            "$RELEASE_DIR/ceh-sklad-root-ca.crt" \
             "$RELEASE_DIR/SHA256SUMS.txt" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "Цех Склад Android ${VERSION_NAME}" \
-            --notes "Подписанный Android release Цех Склад. Backend: ${API_BASE_URL}. Исходный commit: ${GITHUB_SHA}. Контрольные суммы и параметры подписи находятся в приложенных manifest/SHA256SUMS."
+            --notes "Подписанный Android release Цех Склад. Backend: ${API_BASE_URL}. Исходный commit: ${GITHUB_SHA}. Перед запуском приложения установите приложенный публичный root CA на доверенное устройство. Контрольные суммы и параметры подписи находятся в manifest/SHA256SUMS."
 
-      - name: Удалить временный keystore
+      - name: Удалить временные release-секреты
         if: ${{ always() }}
-        run: rm -f "$RUNNER_TEMP/ceh-sklad-release.keystore"
+        run: rm -f "$RUNNER_TEMP/ceh-sklad-release.keystore" "$RUNNER_TEMP/ceh-sklad-root-ca.crt"

@@ -4,13 +4,14 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import ssl
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -135,8 +136,17 @@ def verify_ready_payload(
     return backend_status, database, actual_schema_revision, actual_version, tuple(errors)
 
 
-def fetch_ready(base_url: str, *, timeout: float = 15.0) -> Any:
-    opener = build_opener(_NoRedirect())
+def build_ssl_context(ca_cert: Path | None) -> ssl.SSLContext:
+    if ca_cert is None:
+        return ssl.create_default_context()
+    if not ca_cert.is_file():
+        raise ValueError(f"CA certificate не найден: {ca_cert}")
+    return ssl.create_default_context(cafile=str(ca_cert))
+
+
+def fetch_ready(base_url: str, *, timeout: float = 15.0, ca_cert: Path | None = None) -> Any:
+    context = build_ssl_context(ca_cert)
+    opener = build_opener(_NoRedirect(), HTTPSHandler(context=context))
     request = Request(
         f"{base_url}/health/ready",
         headers={"Accept": "application/json", "User-Agent": "ceh-sklad-release-verifier/1"},
@@ -164,6 +174,7 @@ def run_check(
     repo_root: Path = REPO_ROOT,
     timeout: float = 15.0,
     payload: Any | None = None,
+    ca_cert: Path | None = None,
 ) -> ReleaseBackendReport:
     base_url = validate_base_url(base_url)
     version = expected_version(repo_root)
@@ -171,7 +182,7 @@ def run_check(
     errors: list[str] = []
 
     try:
-        ready_payload = fetch_ready(base_url, timeout=timeout) if payload is None else payload
+        ready_payload = fetch_ready(base_url, timeout=timeout, ca_cert=ca_cert) if payload is None else payload
         backend_status, database, actual_schema_revision, actual_version, payload_errors = verify_ready_payload(
             ready_payload,
             expected_version_value=version,
@@ -204,6 +215,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--timeout", type=float, default=15.0)
+    parser.add_argument(
+        "--ca-cert",
+        type=Path,
+        help="Дополнительный доверенный root CA PEM/CRT для production с внутренним CA",
+    )
     parser.add_argument("--output", type=Path)
     return parser.parse_args()
 
@@ -211,7 +227,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
-        report = run_check(args.base_url, timeout=args.timeout)
+        report = run_check(args.base_url, timeout=args.timeout, ca_cert=args.ca_cert)
     except (OSError, ValueError, SyntaxError) as exc:
         report = {
             "status": "invalid",

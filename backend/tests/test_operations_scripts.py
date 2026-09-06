@@ -45,10 +45,14 @@ def test_backup_and_monitor_have_persistent_systemd_timers():
 
 def test_production_monitor_checks_ready_backup_disk_and_internal_ca():
     script = (ROOT / "scripts/production_monitor.py").read_text(encoding="utf-8")
+    service = (ROOT / "deploy/systemd/ceh-monitor.service").read_text(encoding="utf-8")
 
     assert "/health/ready" in script
     assert "sha256" in script
     assert "disk_usage" in script
     assert "CEH_MONITOR_WEBHOOK_URL" in script
     assert "CEH_MONITOR_CA_CERT" in script
+    assert "CEH_MONITOR_CONNECT_HOST" in script
     assert "ssl.create_default_context" in script
+    assert "Environment=CEH_MONITOR_CA_CERT=/etc/ceh-sklad/ceh-sklad-root-ca.crt" in service
+    assert "Environment=CEH_MONITOR_CONNECT_HOST=127.0.0.1" in service

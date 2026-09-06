@@ -2,34 +2,51 @@
 
 ## Debug
 
-Debug-сборка предназначена для Android Emulator и обращается к backend по адресу `http://10.0.2.2:8000/`. Только debug-манифест разрешает незашифрованный HTTP.
+Debug-сборка предназначена для Android Emulator и обращается к backend по `http://10.0.2.2:8000/`. Только debug-манифест разрешает cleartext HTTP.
 
 ```bash
 ./android/gradlew -p android :app:assembleDebug
 ```
 
-В обычном CI готовый `app-debug.apk` сохраняется как артефакт `ceh-sklad-debug-apk`. CI также компилирует release-вариант с тестовым HTTPS URL без production-подписи, чтобы release-конфигурация не ломалась незаметно.
+## Production URL
 
-## Release URL
+Release-сборка запрещает HTTP. Production URL должен совпадать с фактическим HTTPS origin по публичному IP и нестандартному порту:
 
-Release-сборка запрещает cleartext HTTP. URL backend передается Gradle-свойством `CEH_API_BASE_URL` и в production должен совпадать с фактическим HTTPS origin вида `https://<PUBLIC_IP>:<PORT>/`.
-
-```bash
-./android/gradlew -p android :app:assembleRelease \
-  -PCEH_API_BASE_URL=https://<REAL_PUBLIC_IP>:<REAL_HTTPS_PORT>/
+```text
+https://<PUBLIC_IP>:<PORT>/
 ```
 
-Если внешний порт — `443`, `:443` можно не указывать. Для IPv6 используйте URL-форму с квадратными скобками: `https://[IPv6]:PORT/`.
+Например:
 
-Если свойство не передано, APK получает заведомо нерабочий адрес `https://not-configured.invalid/`, чтобы тестовая конфигурация не могла случайно обратиться к локальному backend.
+```text
+https://<PUBLIC_IP>:40443/
+```
 
-Production IP должен иметь публично доверенный TLS-сертификат. Текущий production-профиль получает короткоживущий Let’s Encrypt IP certificate через Caddy; Android не должен отключать проверку TLS или доверять самоподписанному сертификату без отдельного утверждённого pinning/CA-профиля.
+Если Gradle property не задано, APK получает заведомо нерабочий `https://not-configured.invalid/`.
+
+## Внутренний CA
+
+Production не использует Let's Encrypt и не требует внешних TCP 80/443. Caddy использует `tls internal` и хранит свой CA в persistent `caddy_data`.
+
+После первого запуска сервера экспортируйте публичный root certificate:
+
+```bash
+python3 scripts/export_internal_ca.py
+```
+
+Файл по умолчанию:
+
+```text
+~/.ceh-sklad/tls/ceh-sklad-root-ca.crt
+```
+
+Перед первым запуском release APK этот root CA необходимо установить на Android-устройство как пользовательский доверенный CA. Release network-security config разрешает доверие к system CA и user CA, но `cleartextTrafficPermitted=false` остаётся обязательным.
+
+Не отключайте TLS verification и не используйте HTTP.
 
 ## Production signing key
 
-Keystore и пароли нельзя хранить в Git. Production signing key создается один раз и затем должен использоваться для всех обновлений уже установленного приложения.
-
-Рекомендуемый способ подготовки — встроенный helper. Нужен JDK 17+; для автоматической загрузки GitHub Secrets также нужен авторизованный GitHub CLI (`gh auth login`):
+Keystore и пароли нельзя хранить в Git. Production signing key создаётся один раз и используется для всех обновлений приложения.
 
 ```bash
 python scripts/prepare_android_signing.py \
@@ -37,19 +54,7 @@ python scripts/prepare_android_signing.py \
   --upload-secrets
 ```
 
-По умолчанию helper:
-
-- создает PKCS12 key `~/.ceh-sklad/android-signing/ceh-sklad-release.p12`;
-- создает `ceh-sklad-signing-backup.json` с параметрами восстановления;
-- использует RSA 4096 и срок сертификата 10000 дней;
-- создает каталог с правами `0700`, а key/backup — `0600`;
-- отказывается создавать signing material внутри Git-репозитория;
-- никогда не перезаписывает уже существующий production key;
-- передает секреты в `gh secret set` через stdin и не выводит пароли/base64 в консоль.
-
-После создания обязательно сохраните **и keystore, и backup JSON** в защищенной офлайн-копии. Потеря production signing key означает невозможность выпустить обновление поверх уже установленного APK с прежней подписью.
-
-Helper загружает следующие GitHub Secrets:
+Helper создаёт постоянный key вне репозитория и загружает четыре signing secrets:
 
 ```text
 CEH_ANDROID_KEYSTORE_BASE64
@@ -58,50 +63,59 @@ CEH_ANDROID_KEY_ALIAS
 CEH_ANDROID_KEY_PASSWORD
 ```
 
-Если `--upload-secrets` не используется, эти четыре значения можно настроить вручную из локального backup, не копируя сам backup в репозиторий или issue.
+Обязательно сохраните keystore и backup JSON в двух защищённых местах.
 
-Для локальной подписанной сборки Gradle читает соответствующие переменные окружения:
+## Root CA для GitHub Actions
+
+Дополнительно нужно создать GitHub Secret:
 
 ```text
-CEH_ANDROID_KEYSTORE_PATH
-CEH_ANDROID_KEYSTORE_PASSWORD
-CEH_ANDROID_KEY_ALIAS
-CEH_ANDROID_KEY_PASSWORD
+CEH_INTERNAL_CA_CERT_BASE64
 ```
+
+Это **base64 публичного** `ceh-sklad-root-ca.crt`. Приватный CA key Caddy сюда никогда не загружается.
+
+Linux-команда для подготовки значения без переносов строк:
+
+```bash
+base64 -w 0 ~/.ceh-sklad/tls/ceh-sklad-root-ca.crt
+```
+
+Полученное значение добавляется в GitHub → Repository → Settings → Secrets and variables → Actions → New repository secret.
 
 ## Workflow `Подписанный Android release`
 
-Ручной workflow предназначен только для production-релиза. В input `api_base_url` передавайте точный production origin:
+Запускайте workflow только после рабочего production backend.
+
+Input `api_base_url`:
 
 ```text
 https://<REAL_PUBLIC_IP>:<REAL_HTTPS_PORT>/
 ```
 
-Workflow выполняет release-gates:
+Workflow:
 
-1. запускается только с текущего HEAD ветки `main`;
-2. требует завершенные зелёные `Проверка проекта` и `Проверка release-контрактов` на том же commit;
-3. повторно выполняет release-contract тесты;
-4. проверяет, что `api_base_url` — чистый HTTPS origin без credentials/path/query/fragment;
-5. **до декодирования keystore** выполняет `scripts/verify_release_backend.py`: `/health/ready` обязан вернуть `ready/ok`, точную версию из `VERSION` и единственный актуальный Alembic head;
-6. сохраняет JSON-отчет проверки backend как CI artifact даже при отказе gate;
-7. декодирует keystore только во временный каталог runner;
-8. собирает подписанные APK и AAB;
-9. проверяет APK через `apksigner` и AAB через `jarsigner`;
-10. формирует `android-release-manifest.json` с SHA-256 APK, fingerprint сертификата, package/version, backend URL и source commit;
-11. формирует `SHA256SUMS.txt`;
-12. независимо перепроверяет пакет через `scripts/verify_android_release.py`;
-13. запрещает повторную публикацию существующего `android-v<versionName>`;
-14. публикует GitHub Release;
-15. удаляет временный keystore через `always()`.
-
-Backend verifier выполняет только HTTPS `GET /health/ready`, не использует production credentials и не изменяет данные. Он fail-closed при redirect, сетевой/HTTP/JSON ошибке, нескольких Alembic heads или несовпадении схемы/версии.
-
-Перед следующим релизом необходимо увеличить `versionCode` и `versionName` в `android/app/build.gradle.kts`.
+1. разрешает release только с актуального HEAD `main`;
+2. требует зелёные `Проверка проекта` и `Проверка release-контрактов` на том же commit;
+3. проверяет локальные release-contract unit tests;
+4. требует `CEH_INTERNAL_CA_CERT_BASE64` и четыре Android signing secrets;
+5. декодирует только публичный root CA;
+6. до доступа к keystore проверяет `/health/ready` через этот CA;
+7. требует точную версию из `VERSION` и единственный актуальный Alembic head;
+8. только после успешной проверки backend декодирует production keystore;
+9. собирает подписанные APK и AAB;
+10. проверяет APK через `apksigner`, AAB через `jarsigner`;
+11. формирует `android-release-manifest.json`;
+12. включает `ceh-sklad-root-ca.crt` в release;
+13. формирует `SHA256SUMS.txt` для APK, AAB, manifest и root CA;
+14. независимо перепроверяет все четыре файла;
+15. запрещает повторную публикацию существующего `android-v<versionName>`;
+16. публикует GitHub Release;
+17. удаляет временные keystore/root CA с runner.
 
 ## Независимая проверка скачанного release
 
-После скачивания APK/AAB/manifest/SHA256SUMS выполните проверку отдельно от workflow:
+После скачивания release выполните:
 
 ```bash
 APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
@@ -110,22 +124,46 @@ python scripts/verify_android_release.py \
   --apk ceh-sklad-0.4.0.apk \
   --aab ceh-sklad-0.4.0.aab \
   --manifest android-release-manifest.json \
+  --ca-cert ceh-sklad-root-ca.crt \
   --checksums SHA256SUMS.txt \
   --apksigner "$APKSIGNER" \
   --expected-api-base-url https://<REAL_PUBLIC_IP>:<REAL_HTTPS_PORT>/ \
   --expected-source-commit <40-символьный-SHA>
 ```
 
-Verifier проверяет SHA-256, размеры, APK/AAB signatures, signer certificate fingerprint, package/version, production API URL и source commit.
+Verifier проверяет:
+
+- SHA-256 APK/AAB/manifest/root CA;
+- APK signer certificate;
+- AAB signature;
+- package/version;
+- production API URL;
+- source commit.
+
+## Установка root CA на Android
+
+Точное название пунктов зависит от производителя Android, но общий путь обычно находится в Settings → Security/Privacy → Encryption & credentials → Install a certificate → CA certificate.
+
+Перед установкой сверяйте SHA-256 fingerprint root CA со значением, полученным непосредственно на production server командой:
+
+```bash
+python3 scripts/export_internal_ca.py
+```
+
+После установки CA и APK проверьте приложение и по Wi-Fi, и по мобильной сети.
+
+Если устройство сообщает о недоверенном сертификате, не обходите ошибку: сначала проверьте, что установлен правильный root CA.
 
 ## Перед production-публикацией
 
-1. Развернуть backend на фактическом `https://IP:PORT` и убедиться, что TLS публично доверен.
-2. Проверить `/health/ready` и exact release backend contract.
-3. Создать production signing key и сохранить офлайн backup.
-4. Убедиться, что четыре `CEH_ANDROID_*` GitHub Secrets настроены.
-5. Запустить `Подписанный Android release` с точным `https://IP:PORT/`.
-6. Скачать файлы GitHub Release и независимо выполнить verifier.
-7. Установить APK на физическом устройстве по Wi-Fi и мобильной сети.
-8. Пройти login, остатки, retail/wholesale sale, возврат, сдачу денег, realtime и offline queue.
-9. Не менять signing key между обычными обновлениями приложения.
+1. Развернуть backend на `https://IP:PORT`.
+2. Экспортировать root CA и сверить fingerprint.
+3. Установить CA на тестовый рабочий компьютер и Android.
+4. Проверить `/health` и `/health/ready` без TLS warnings.
+5. Добавить `CEH_INTERNAL_CA_CERT_BASE64` в GitHub Secrets.
+6. Создать production Android signing key и сохранить backup.
+7. Запустить `Подписанный Android release`.
+8. Скачать APK/AAB/manifest/root CA/SHA256SUMS и независимо проверить verifier.
+9. Установить APK на физическом Android.
+10. Пройти login, остатки, retail/wholesale sale, возврат, сдачу денег, realtime и offline queue.
+11. Не менять signing key и Caddy CA без процедуры миграции доверия.

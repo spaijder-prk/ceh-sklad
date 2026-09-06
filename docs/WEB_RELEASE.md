@@ -6,21 +6,21 @@ Web-панель использует Vite-переменную `VITE_API_BASE_U
 
 ```bash
 cd admin-web
-npm install
-VITE_API_BASE_URL=https://sklad.example.ru/api/v1 npm run build
+npm ci
+VITE_API_BASE_URL=https://<PUBLIC_IP>:<HTTPS_PORT>/api/v1 npm run build
 ```
 
-Для production разрешается только HTTPS URL. WebSocket-адрес вычисляется из того же значения автоматически (`https://` → `wss://`).
+Для production разрешается только HTTPS URL. В штатном Docker deployment значение формируется из `${CEH_PUBLIC_ORIGIN}/api/v1`, поэтому web, backend CORS, Caddy и Android используют один и тот же `https://IP:PORT` origin.
 
-CI дополнительно проверяет, что строка `localhost:8000` отсутствует в готовом каталоге `dist`.
+CI дополнительно проверяет, что строка `localhost:8000` отсутствует в готовом `dist`.
 
 ## Backend
 
-На backend задайте соответствующий HTTPS origin панели:
+Backend должен разрешать только фактический HTTPS origin панели:
 
 ```env
 ENVIRONMENT=production
-CORS_ORIGINS=["https://sklad.example.ru"]
+CORS_ORIGINS=["https://<PUBLIC_IP>:<HTTPS_PORT>"]
 ```
 
-Сам FastAPI рекомендуется публиковать через TLS reverse proxy. Пользовательские JWT и ключ `X-1C-Key` не должны передаваться по незашифрованному HTTP.
+Production Compose задаёт это автоматически через `CEH_PUBLIC_ORIGIN`. FastAPI напрямую наружу не публикуется; трафик идёт через Caddy. Пользовательские JWT и ключ `X-1C-Key` нельзя передавать по незашифрованному HTTP.

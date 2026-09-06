@@ -65,7 +65,7 @@ jobs:
 
       - name: Проверить локальные release-контракты
         run: |
-          python -m compileall scripts/prepare_production_env.py scripts/tests
+          python -m compileall scripts/prepare_production_env.py scripts/verify_release_backend.py scripts/tests
           python -m unittest discover -s scripts/tests -p "test_*.py" -v
 
       - name: Установить Java
@@ -100,6 +100,23 @@ jobs:
           test -n "$KEYSTORE_PASSWORD" || { echo "Не задан CEH_ANDROID_KEYSTORE_PASSWORD"; exit 2; }
           test -n "$KEY_ALIAS" || { echo "Не задан CEH_ANDROID_KEY_ALIAS"; exit 2; }
           test -n "$KEY_PASSWORD" || { echo "Не задан CEH_ANDROID_KEY_PASSWORD"; exit 2; }
+
+      - name: Проверить production backend перед подписью
+        env:
+          API_BASE_URL: ${{ inputs.api_base_url }}
+        run: >-
+          python scripts/verify_release_backend.py
+          --base-url "$API_BASE_URL"
+          --output "$RUNNER_TEMP/android-release-backend.json"
+
+      - name: Сохранить проверку production backend
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-backend-preflight-${{ github.run_id }}
+          path: ${{ runner.temp }}/android-release-backend.json
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: Подготовить keystore
         env:

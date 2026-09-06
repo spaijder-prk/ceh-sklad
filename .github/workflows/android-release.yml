@@ -29,7 +29,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Проверить источник релиза и зеленый CI
+      - name: Проверить источник релиза и обязательные зеленые CI gates
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -51,6 +51,15 @@ jobs:
           )"
           if [ "$PROJECT_CI_COUNT" -lt 1 ]; then
             echo "Для $GITHUB_SHA нет завершенного зеленого workflow «Проверка проекта»." >&2
+            exit 2
+          fi
+
+          RELEASE_CONTRACT_CI_COUNT="$(
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=push&per_page=100" \
+              --jq '[.workflow_runs[] | select(.name == "Проверка release-контрактов" and .status == "completed" and .conclusion == "success")] | length'
+          )"
+          if [ "$RELEASE_CONTRACT_CI_COUNT" -lt 1 ]; then
+            echo "Для $GITHUB_SHA нет завершенного зеленого workflow «Проверка release-контрактов»." >&2
             exit 2
           fi
 

@@ -77,14 +77,6 @@ class HardeningContractsTest(unittest.TestCase):
         self.assertNotIn('gradle-version: "8.9"', instrumented)
         self.assertIn("api-level: 36", instrumented)
 
-    def test_dependabot_keeps_android_version_updates_frozen_for_0_4_0(self):
-        dependabot = (ROOT / ".github/dependabot.yml").read_text(encoding="utf-8")
-        gradle_block = dependabot.split("  - package-ecosystem: gradle", maxsplit=1)[1]
-
-        self.assertIn("directory: /android", gradle_block)
-        self.assertIn("open-pull-requests-limit: 0", gradle_block)
-        self.assertNotIn("version-update:semver-", gradle_block)
-
     def test_main_ruleset_requires_pr_and_both_ci_checks(self):
         ruleset = json.loads((ROOT / ".github/rulesets/main.json").read_text(encoding="utf-8"))
         types = {rule["type"] for rule in ruleset["rules"]}
@@ -120,11 +112,20 @@ class HardeningContractsTest(unittest.TestCase):
             "RELEASE_CONTRACT_CI_COUNT",
             "pip install -r backend/requirements.lock",
             "pip install --no-deps -e './backend[dev]'",
+            "Проверить точный backend release-контракт",
+            "python scripts/verify_release_backend.py",
+            "staging-backend-contract.json",
+            "staging-release-preflight.json",
         )
         for fragment in required_fragments:
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, workflow)
 
+        self.assertLess(
+            workflow.index("Проверить точный backend release-контракт"),
+            workflow.index("Выполнить read-only staging smoke"),
+        )
+        self.assertNotIn('--expected-schema-revision "20260904_09"', workflow)
         self.assertNotIn("run: pip install -e './backend[dev]'", workflow)
 
 

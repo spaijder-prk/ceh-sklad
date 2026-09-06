@@ -131,7 +131,7 @@ def wait_for_readiness(domain: str, expected_version: str, timeout: float) -> di
                 raise RuntimeError(f"liveness status={live.get('status')!r}")
             if ready.get("status") != "ready" or ready.get("database") != "ok":
                 raise RuntimeError(
-                    f"readiness status={ready.get('status')!r}, database={database!r}"
+                    f"readiness status={ready.get('status')!r}, database={ready.get('database')!r}"
                 )
             live_version = str(live.get("version") or "")
             ready_version = str(ready.get("version") or "")

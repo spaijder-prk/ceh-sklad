@@ -35,6 +35,24 @@ class HardeningContractsTest(unittest.TestCase):
         self.assertIn("pip install --no-cache-dir -r requirements.lock", backend_docker)
         self.assertIn("--no-build-isolation", backend_docker)
 
+    def test_docker_contexts_exclude_local_secrets_and_generated_data(self):
+        backend_ignore = (ROOT / "backend/.dockerignore").read_text(encoding="utf-8")
+        web_ignore = (ROOT / "admin-web/.dockerignore").read_text(encoding="utf-8")
+
+        for name, content in (("backend", backend_ignore), ("admin-web", web_ignore)):
+            with self.subTest(context=name):
+                self.assertIn(".env\n", content)
+                self.assertIn(".env.*\n", content)
+                self.assertIn("*.log\n", content)
+
+        self.assertIn(".venv/\n", backend_ignore)
+        self.assertIn(".pytest_cache/\n", backend_ignore)
+        self.assertIn("tests/\n", backend_ignore)
+        self.assertIn("node_modules/\n", web_ignore)
+        self.assertIn("dist/\n", web_ignore)
+        self.assertIn("playwright-report/\n", web_ignore)
+        self.assertIn("test-results/\n", web_ignore)
+
     def test_all_android_workflows_build_through_wrapper(self):
         release = (ROOT / ".github/workflows/android-release.yml").read_text(encoding="utf-8")
         instrumented = (ROOT / ".github/workflows/android-instrumented.yml").read_text(encoding="utf-8")

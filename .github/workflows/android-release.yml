@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       api_base_url:
-        description: HTTPS URL backend, например https://sklad.example.ru/
+        description: HTTPS origin production, например https://IP:PORT/
         required: true
         type: string
 
